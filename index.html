@@ -3,9 +3,234 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.5, user-scalable=yes, viewport-fit=cover">
-    <title>SmartStore PRO v38.9 Universal Responsive Layout + Stable Print + Treasury + Fast Local Barcode + Smart Search + Box Packaging | نظام إدارة المتاجر والمخازن والفواتير والسندات</title>
+    <title>SmartStore PRO | نظام إدارة المتاجر والمخازن والفواتير والسندات</title>
     <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.0/dist/quagga.min.js">
-    </script>
+    
+/* SMARTSTORE_V5_PACKAGING_HELPERS */
+function ssPackInfo(p){
+    p=p||{};
+    var perBox=num(p.piecesPerBox||p.unitsPerBox||p.boxPieces||0);
+    var boxesPerCarton=num(p.boxesPerCarton||p.cartonBoxes||p.boxesInCarton||0);
+    var perCarton=num(p.piecesPerCarton||0);
+    if(!perCarton && perBox && boxesPerCarton) perCarton=perBox*boxesPerCarton;
+    return {perBox:perBox,boxesPerCarton:boxesPerCarton,perCarton:perCarton};
+}
+function ssUnitPieces(p,unit){
+    var i=ssPackInfo(p);
+    unit=String(unit||'piece').toLowerCase();
+    if(unit==='carton'||unit==='كرتونة'||unit==='كرتونه') return i.perCarton||1;
+    if(unit==='box'||unit==='علبة') return i.perBox||1;
+    return 1;
+}
+function ssAvailablePieces(p){
+    var q=num(p&&p.quantity);
+    var i=ssPackInfo(p);
+    var loose=num(p&&p.loosePieces||p&&p.loose||0);
+    if(i.perBox && i.boxesPerCarton && (p.cartons!=null || p.cartonQty!=null)){
+        q=num(p.cartons||p.cartonQty)*i.perCarton + num(p.boxes||p.boxQty||0)*i.perBox + loose;
+    }else if(i.perBox && (p.boxes!=null || p.boxQty!=null)){
+        q=num(p.boxes||p.boxQty)*i.perBox + loose;
+    }
+    return q;
+}
+function ssUnitLabel(unit){
+    unit=String(unit||'piece').toLowerCase();
+    if(unit==='carton'||unit==='كرتونة'||unit==='كرتونه') return 'كرتونة';
+    if(unit==='box'||unit==='علبة') return 'علبة';
+    return 'قطعة';
+}
+function ssUnitPrice(p,unit){
+    unit=String(unit||'piece').toLowerCase();
+    var i=ssPackInfo(p), base=num(p&&p.price);
+    if(unit==='carton'||unit==='كرتونة'||unit==='كرتونه'){
+        if(p.priceCarton!=null) return num(p.priceCarton);
+        if(p.cartonPrice!=null) return num(p.cartonPrice);
+        return i.perCarton ? base*i.perCarton : base;
+    }
+    if(unit==='box'||unit==='علبة'){
+        if(p.priceBox!=null) return num(p.priceBox);
+        if(p.boxPrice!=null) return num(p.boxPrice);
+        return i.perBox ? base*i.perBox : base;
+    }
+    return base;
+}
+
+
+/* SMARTSTORE_V6_POS_UNIT_SELECTOR */
+(function(){
+    if(window.__ssV6PosUnitSelector)return;
+    window.__ssV6PosUnitSelector=true;
+    document.addEventListener('click',function(ev){
+        var btn=ev.target.closest && ev.target.closest('[data-pos-product-id]');
+        if(!btn)return;
+        var pid=btn.getAttribute('data-pos-product-id');
+        var p=(DB.products||[]).find(function(x){return String(x.id)===String(pid);});
+        if(!p)return;
+        var i=ssPackInfo(p);
+        if(!(i.perBox||i.perCarton))return;
+        if(ev.target.closest('button,select,input') && !ev.target.closest('.pos-product-unit-picker')) return;
+    });
+})();
+
+
+/* SMARTSTORE_V7_REAL_POS_UNIT_BRIDGE */
+(function(){
+    if(window.__ssV7UnitBridge)return;
+    window.__ssV7UnitBridge=true;
+
+    window.ssGetSaleUnits=function(p){
+        var units=[{key:'piece',label:'قطعة',pieces:1,price:ssUnitPrice(p,'piece')}];
+        var i=ssPackInfo(p);
+        if(i.perBox>0) units.push({key:'box',label:'علبة',pieces:i.perBox,price:ssUnitPrice(p,'box')});
+        if(i.perCarton>0) units.push({key:'carton',label:'كرتونة',pieces:i.perCarton,price:ssUnitPrice(p,'carton')});
+        return units;
+    };
+
+    window.ssBuildUnitPicker=function(p){
+        var units=ssGetSaleUnits(p);
+        if(units.length<2)return '';
+        return '<div class="pos-product-unit-picker" data-pos-unit-picker="'+String(p.id).replace(/"/g,'&quot;')+'">'+
+            units.map(function(u){
+                return '<button type="button" data-pos-unit="'+u.key+'" data-pos-product-id="'+String(p.id).replace(/"/g,'&quot;')+'" title="'+u.pieces+' قطعة">'+
+                    u.label+
+                '</button>';
+            }).join('')+
+        '</div>';
+    };
+
+    document.addEventListener('click',function(ev){
+        var b=ev.target.closest && ev.target.closest('[data-pos-unit]');
+        if(!b)return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        var pid=b.getAttribute('data-pos-product-id');
+        var unit=b.getAttribute('data-pos-unit');
+        var p=(DB.products||[]).find(function(x){return String(x.id)===String(pid);});
+        if(!p)return;
+
+        var units=ssGetSaleUnits(p);
+        var selected=units.find(function(x){return x.key===unit;});
+        if(!selected)return;
+
+        var picker=b.closest('.pos-product-unit-picker');
+        if(picker) picker.querySelectorAll('[data-pos-unit]').forEach(function(x){x.classList.remove('active');});
+        b.classList.add('active');
+
+        // Store the choice on the product card only. The actual cart insertion remains
+        // delegated to the existing POS code until its concrete renderer is identified.
+        var card=b.closest('[data-pos-product-id]') || b.closest('.pos-product-card') || b.parentElement;
+        if(card){
+            card.setAttribute('data-selected-sale-unit',unit);
+            card.setAttribute('data-selected-sale-pieces',String(selected.pieces));
+            card.setAttribute('data-selected-sale-price',String(selected.price));
+        }
+    });
+})();
+
+
+/* SMARTSTORE_V8_STOCK_UNIT_ENGINE */
+(function(){
+    if(window.__ssV8StockUnitEngine)return;
+    window.__ssV8StockUnitEngine=true;
+
+    window.ssNormalizeSaleLine=function(line){
+        line=line||{};
+        var p=(DB.products||[]).find(function(x){return String(x.id)===String(line.productId||line.id);});
+        if(!p)return line;
+        var unit=line.saleUnit||line.unit||'piece';
+        var factor=ssUnitPieces(p,unit);
+        line.saleUnit=unit;
+        line.unitLabel=ssUnitLabel(unit);
+        line.unitPieces=factor;
+        line.saleQty=Math.max(0,num(line.qty||line.quantity||1));
+        line.stockQty=line.saleQty*factor;
+        line.unitPrice=(line.unitPrice!=null?num(line.unitPrice):ssUnitPrice(p,unit));
+        line.lineTotal=(line.lineTotal!=null?num(line.lineTotal):line.saleQty*line.unitPrice);
+        return line;
+    };
+
+    window.ssCanSellLine=function(line){
+        line=ssNormalizeSaleLine(line);
+        var p=(DB.products||[]).find(function(x){return String(x.id)===String(line.productId||line.id);});
+        if(!p)return {ok:false,message:'المنتج غير موجود'};
+        var available=ssAvailablePieces(p);
+        if(line.stockQty>available+1e-9){
+            return {ok:false,message:'الكمية غير متاحة. المتاح '+available+' قطعة فقط.'};
+        }
+        return {ok:true,available:available};
+    };
+
+    window.ssDebitStockByUnit=function(line){
+        line=ssNormalizeSaleLine(line);
+        var p=(DB.products||[]).find(function(x){return String(x.id)===String(line.productId||line.id);});
+        if(!p)return false;
+
+        var pieces=line.stockQty;
+        var before=ssAvailablePieces(p);
+        if(pieces>before+1e-9)return false;
+
+        var i=ssPackInfo(p);
+        var loose=Math.max(0,num(p.loosePieces||p.loose||0));
+        var boxes=Math.max(0,num(p.boxes||p.boxQty||0));
+        var cartons=Math.max(0,num(p.cartons||p.cartonQty||0));
+
+        // Consume loose pieces first; then boxes; then cartons. When a box/carton is
+        // opened, its pieces become loose so a sale can always be represented exactly.
+        var takeLoose=Math.min(loose,pieces);
+        loose-=takeLoose; pieces-=takeLoose;
+
+        if(pieces>0 && i.perBox>0){
+            var takeBoxes=Math.min(boxes,Math.floor((pieces+1e-9)/i.perBox));
+            boxes-=takeBoxes; pieces-=takeBoxes*i.perBox;
+        }
+
+        if(pieces>0 && i.perCarton>0){
+            var takeCartons=Math.min(cartons,Math.floor((pieces+1e-9)/i.perCarton));
+            cartons-=takeCartons; pieces-=takeCartons*i.perCarton;
+        }
+
+        // If the remainder is less than a full box/carton, open one package and
+        // leave the unused pieces as loose stock.
+        if(pieces>0 && i.perBox>0 && boxes>0){
+            boxes--;
+            loose+=i.perBox;
+            var take=Math.min(loose,pieces);
+            loose-=take; pieces-=take;
+        }
+        if(pieces>0 && i.perCarton>0 && cartons>0){
+            cartons--;
+            loose+=i.perCarton;
+            var take2=Math.min(loose,pieces);
+            loose-=take2; pieces-=take2;
+        }
+
+        if(pieces>1e-9)return false;
+
+        p.loosePieces=loose;
+        if(i.perBox)p.boxes=boxes;
+        if(i.perCarton)p.cartons=cartons;
+        p.quantity=ssAvailablePieces(p);
+
+        line.stockQty=line.saleQty*line.unitPieces;
+        line.stockUnit='piece';
+        return true;
+    };
+
+    window.ssRestoreStockByUnit=function(line){
+        line=ssNormalizeSaleLine(line);
+        var p=(DB.products||[]).find(function(x){return String(x.id)===String(line.productId||line.id);});
+        if(!p)return false;
+        var pieces=line.stockQty;
+        p.loosePieces=Math.max(0,num(p.loosePieces||p.loose||0))+pieces;
+        p.quantity=ssAvailablePieces(p);
+        return true;
+    };
+})();
+
+
+
+
+</script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js">
     </script>
@@ -1069,10 +1294,10 @@
         .smart-search-field{min-width:0;}
         .smart-search-field .smart-search-hint{font-size:.58rem;color:var(--gray-400);line-height:1.5;}
         .smart-search-field .btn-group{margin-top:.25rem;}
-        .invoice-barcode-box{display:flex;flex-direction:column;align-items:center;gap:.12rem;margin:.55rem auto .15rem;padding:.22rem;border:1px dashed var(--gray-300);border-radius:8px;background:var(--gray-50);max-width:105px;text-align:center;break-inside:avoid;page-break-inside:avoid;}
-        .invoice-barcode-box svg{width:96px;height:44px;display:block;background:#fff;border-radius:3px;overflow:visible;}
+        .invoice-barcode-box{display:flex;flex-direction:column;align-items:center;gap:.18rem;margin:.7rem auto .2rem;padding:.45rem .35rem .3rem;border:0;border-top:1px dashed var(--gray-300);border-radius:0;background:#fff;max-width:270px;width:100%;text-align:center;break-inside:avoid;page-break-inside:avoid;}
+        .invoice-barcode-box svg{width:250px;height:72px;max-width:100%;display:block;background:#fff;border-radius:0;overflow:visible;shape-rendering:crispEdges;}
         .invoice-barcode-box .qr-loading{width:72px;height:72px;display:flex;align-items:center;justify-content:center;font-size:.5rem;color:var(--gray-400);background:#fff;border-radius:5px;}
-        .invoice-barcode-box small{font-size:.5rem;color:var(--gray-500);line-height:1.25;}
+        .invoice-barcode-box small{font-size:.68rem;color:#111827;line-height:1.2;font-family:monospace;font-weight:800;letter-spacing:.5px;}
                 /* ==================== SEARCH ==================== */
         .search-wrap {
             position: relative;
@@ -1526,18 +1751,38 @@
         .scale-actions{display:flex;gap:.45rem;flex-wrap:wrap}.scale-actions .btn{flex:1;min-width:145px}.scale-hint{font-size:.62rem;color:var(--gray-500);margin-top:.55rem}
         .scale-modal .modal-box{max-width:620px}.scale-captured{display:grid;grid-template-columns:1fr 1fr;gap:.65rem;margin-bottom:.75rem}
         .scale-captured .metric{padding:.75rem;border:1px solid var(--gray-200);border-radius:12px;background:var(--gray-50);text-align:center}.scale-captured .metric small{display:block;color:var(--gray-500);font-size:.62rem}.scale-captured .metric strong{display:block;color:var(--gray-900);font-size:1.05rem;margin-top:.15rem}
-        @media(max-width:600px){.scale-captured{grid-template-columns:1fr}.scale-readout{grid-template-columns:1fr}}
+        @media(max-width:900px){.scale-connection-settings{grid-template-columns:repeat(2,minmax(120px,1fr)) !important}}
+        @media(max-width:600px){.scale-captured{grid-template-columns:1fr}.scale-readout{grid-template-columns:1fr}.scale-connection-settings{grid-template-columns:1fr !important}}
         /* ==================== POS ==================== */
+        /* ==================== POS SIDE-BY-SIDE UNIVERSAL LAYOUT ====================
+           المنتجات دائمًا يسار الشاشة، والسلة/إتمام البيع دائمًا يمين الشاشة.
+           نستخدم LTR للحاوية فقط لضمان الترتيب الفيزيائي على الشاشات RTL،
+           ثم نعيد RTL داخل كل لوحة حتى تبقى العربية من اليمين لليسار.
+           لا يتم تحويل نقطة البيع إلى صف واحد على الأجهزة الصغيرة.
+        */
         .pos-layout {
             display: grid;
-            grid-template-columns: 1.6fr 1fr;
-            gap: 1rem;
+            grid-template-columns: minmax(0, 1.55fr) minmax(220px, 1fr);
+            grid-template-areas: "products cart";
+            gap: 0.85rem;
             align-items: start;
+            direction: ltr;
+            width: 100%;
+            min-width: 0;
         }
-        @media (max-width: 1100px) {
-            .pos-layout {
-                grid-template-columns: 1fr;
-            }
+        .pos-layout > .card:first-child {
+            grid-area: products;
+            direction: rtl;
+            min-width: 0;
+        }
+        .pos-layout > .pos-cart {
+            grid-area: cart;
+            direction: rtl;
+            min-width: 0;
+        }
+        .pos-layout > .card {
+            width: 100%;
+            max-width: 100%;
         }
         .pos-grid {
             display: grid;
@@ -1546,6 +1791,150 @@
             max-height: 520px;
             overflow-y: auto;
             padding: 2px;
+        }
+        /* نقطة البيع تظل بعمودين في الكمبيوتر والتابلت والموبايل،
+           مع تصغير النسب والحواشي تدريجيًا حتى تبقى المنتجات والسلة ظاهرين معًا. */
+        .pos-grid,
+        .pos-cart,
+        .pos-layout > .card {
+            min-width: 0;
+        }
+        @media (max-width: 900px) {
+            .pos-layout {
+                grid-template-columns: minmax(0, 1.15fr) minmax(185px, .85fr);
+                gap: .6rem;
+            }
+            .pos-layout > .card {
+                padding: .85rem;
+            }
+            .pos-grid {
+                grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+                gap: .45rem;
+                max-height: calc(100vh - 205px);
+            }
+            .pos-cart {
+                top: calc(var(--header-height) + .6rem);
+            }
+            .cart-lines {
+                max-height: min(300px, calc(100vh - 430px));
+            }
+        }
+        @media (max-width: 600px) {
+            .pos-layout {
+                grid-template-columns: minmax(0, 1fr) minmax(155px, .9fr);
+                gap: .45rem;
+            }
+            .pos-layout > .card {
+                padding: .65rem;
+                border-radius: .8rem;
+            }
+            .pos-layout .card-head {
+                gap: .3rem;
+                margin-bottom: .65rem;
+            }
+            .pos-layout .card-head h3 {
+                font-size: .76rem;
+            }
+            .pos-grid {
+                grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+                gap: .35rem;
+                max-height: calc(100vh - 190px);
+            }
+            .pos-item {
+                padding: .5rem;
+            }
+            .pos-item .p-img {
+                width: 38px;
+                height: 38px;
+            }
+            .pos-item .p-name {
+                font-size: .6rem;
+            }
+            .pos-item .p-price {
+                font-size: .64rem;
+            }
+            .pos-cart .field-group label {
+                font-size: .62rem;
+            }
+            .pos-cart .input-field,
+            .pos-cart .select-field {
+                font-size: .68rem;
+                padding: .42rem .5rem;
+            }
+            .pos-cart .pay-methods {
+                gap: .25rem;
+            }
+            .pos-cart .pay-method {
+                font-size: .58rem;
+                padding: .35rem .25rem;
+            }
+            .cart-lines {
+                max-height: min(270px, calc(100vh - 420px));
+            }
+        }
+        @media (max-width: 390px) {
+            .pos-layout {
+                grid-template-columns: minmax(0, 1fr) minmax(145px, .88fr);
+                gap: .35rem;
+            }
+            .pos-layout > .card {
+                padding: .5rem;
+            }
+            .pos-grid {
+                grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+                gap: .28rem;
+            }
+            .pos-item {
+                padding: .4rem .3rem;
+            }
+            .pos-item .p-img {
+                width: 34px;
+                height: 34px;
+            }
+            .pos-item .p-name {
+                font-size: .55rem;
+            }
+            .pos-item .p-price {
+                font-size: .59rem;
+            }
+            .pos-cart .card-head h3 {
+                font-size: .68rem;
+            }
+            .pos-cart .btn {
+                font-size: .56rem;
+                padding: .3rem .35rem;
+            }
+            .cart-line {
+                gap: .25rem;
+            }
+            .cart-line .cl-name {
+                font-size: .6rem;
+            }
+            .cart-line .cl-price {
+                font-size: .54rem;
+            }
+            .qty-ctrl button {
+                width: 19px;
+                height: 19px;
+            }
+        }
+        @media (max-width: 320px) {
+            .pos-layout {
+                grid-template-columns: minmax(0, 1fr) minmax(132px, .85fr);
+            }
+            .pos-layout > .card {
+                padding: .4rem;
+            }
+            .pos-grid {
+                grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+            }
+            .pos-cart .pay-methods {
+                grid-template-columns: 1fr 1fr;
+                display: grid;
+            }
+            .pos-cart .pay-method {
+                width: 100%;
+            }
         }
         .pos-item {
             background: var(--white);
@@ -2609,6 +2998,14 @@
         .auth-card.auth-busy .input-field{opacity:.75}
         .auth-meta{display:flex;justify-content:center;gap:.4rem;flex-wrap:wrap;margin-top:1rem}
         .auth-meta span{font-size:.58rem;color:var(--gray-400);background:var(--gray-50);border:1px solid var(--gray-200);padding:.22rem .55rem;border-radius:999px;text-align:center}
+        /* Password visibility controls: touch-friendly on phones, tablets and desktop */
+        .password-field-wrap{position:relative;width:100%;}
+        .password-field-wrap .input-field{width:100%;padding-left:3rem!important;}
+        .password-toggle{position:absolute;left:.35rem;top:50%;transform:translateY(-50%);width:42px;height:42px;min-width:42px;border:0;border-radius:10px;background:transparent;color:var(--gray-500);display:flex;align-items:center;justify-content:center;cursor:pointer;z-index:2;touch-action:manipulation;}
+        .password-toggle:hover,.password-toggle:focus-visible{background:var(--gray-100);color:var(--primary);outline:none;}
+        .password-toggle i{font-size:1rem;pointer-events:none;}
+        @media(max-width:380px){.password-toggle{width:40px;height:40px;min-width:40px;left:.2rem}.password-field-wrap .input-field{padding-left:2.75rem!important;}}
+
         .header-user-shift{display:flex;align-items:center;gap:.35rem;min-width:0;max-width:360px}
         .header-user-shift .user-chip,.header-user-shift .shift-chip{display:inline-flex;align-items:center;gap:.35rem;min-width:0;max-width:170px;overflow:hidden;text-overflow:ellipsis}
         .header-user-shift .user-chip span,.header-user-shift .shift-chip span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -3192,7 +3589,237 @@
             }
         }
 
+/* ==================== POS CASHIER REAL-TILL STYLE ====================
+   Inspired by traditional retail cashier layouts shown by the user:
+   large live totals, compact transaction header, tabular cart and clear payment state.
+   UI-only: no change to sale/inventory/sync/printing logic.
+*/
+#page-pos .pos-cashier-summary{
+    display:grid;
+    grid-template-columns:1.05fr 1.35fr 1.15fr 1.15fr;
+    gap:.55rem;
+    margin:0 0 .7rem;
+    direction:rtl;
+}
+#page-pos .pos-summary-box{
+    min-width:0;
+    min-height:82px;
+    padding:.55rem .75rem;
+    border:1px solid #cfd3d8;
+    border-radius:8px;
+    background:linear-gradient(#fff,#f1f3f5);
+    box-shadow:0 1px 2px rgba(0,0,0,.06);
+    display:flex;
+    flex-direction:column;
+    justify-content:center;
+    text-align:right;
+}
+#page-pos .pos-summary-box span{font-size:.68rem;font-weight:800;color:#5d6570}
+#page-pos .pos-summary-box strong{font-size:1.35rem;line-height:1.25;font-weight:950;color:#1c2430;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#page-pos .pos-summary-box small{font-size:.58rem;color:#7a818b;margin-top:.12rem}
+#page-pos .pos-summary-total{border-color:#b7c9dc;background:linear-gradient(#fafdff,#eaf2fa)}
+#page-pos .pos-summary-total strong{font-size:1.65rem;color:#0f4c81}
+#page-pos .pos-summary-paid{border-color:#c9d8c9;background:linear-gradient(#fbfffb,#edf7ed)}
+#page-pos .pos-summary-paid strong{color:#176b38}
+#page-pos .pos-summary-change{border-color:#d9c9a7;background:linear-gradient(#fffdf8,#f8f0dd)}
+#page-pos .pos-summary-change strong{color:#8a5a00}
+#page-pos .pos-layout{gap:.7rem}
+#page-pos .pos-layout > .card:first-child,
+#page-pos .pos-layout > .pos-cart{border:1px solid #cfd3d8;border-radius:8px;box-shadow:0 2px 7px rgba(0,0,0,.055)}
+#page-pos .pos-layout > .card:first-child{background:#f8f9fa}
+#page-pos .pos-cart{background:#fff}
+#page-pos .pos-cart .card-head{background:linear-gradient(#f7f8f9,#e9ecef);margin:-.85rem -.85rem .65rem;padding:.6rem .75rem;border-bottom:1px solid #cfd3d8}
+#page-pos .pos-cart .card-head h3{font-size:.86rem;font-weight:950}
+#page-pos .pos-cart .badge-pill{border-radius:4px;font-size:.58rem}
+#page-pos .pos-cart-table-head{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 78px 72px 92px 38px;
+    gap:.35rem;
+    align-items:center;
+    padding:.38rem .4rem;
+    margin:.05rem 0 .2rem;
+    background:#e7eaee;
+    border:1px solid #cfd3d8;
+    color:#3d4650;
+    font-size:.58rem;
+    font-weight:900;
+    text-align:center;
+}
+#page-pos .pos-cart-table-head span:first-child{text-align:right}
+#page-pos .cart-lines{border:1px solid #d9dde2;border-radius:5px;background:#fff}
+#page-pos .cart-line{
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 78px 72px 92px 38px;
+    gap:.35rem;
+    align-items:center;
+    padding:.48rem .4rem;
+    border-bottom:1px solid #e3e6e9;
+    background:#fff;
+}
+#page-pos .cart-line:last-child{border-bottom:0}
+#page-pos .cart-line:nth-child(even){background:#fafbfc}
+#page-pos .cart-line .cl-info{grid-column:1;min-width:0}
+#page-pos .cart-line .cl-name{font-size:.68rem;font-weight:900;color:#222b35}
+#page-pos .cart-line .cl-price{font-size:.56rem;color:#66707b;margin-top:.12rem}
+#page-pos .cart-line .cl-meta{display:none}
+#page-pos .cart-line .pos-unit-select,
+#page-pos .cart-line .unit-badge{grid-column:2;width:100%;font-size:.56rem;text-align:center}
+#page-pos .cart-line .qty-ctrl{grid-column:3;display:flex;justify-content:center;align-items:center;gap:.18rem}
+#page-pos .cart-line .qty-ctrl button{width:24px;height:24px;min-width:24px;min-height:24px;border:1px solid #c8cdd3;border-radius:4px;background:#f3f5f7;font-weight:900}
+#page-pos .cart-line .qty-ctrl span{min-width:25px;text-align:center;font-weight:900;font-size:.62rem}
+#page-pos .cart-line .cl-line-total{grid-column:4;text-align:center;font-size:.66rem;font-weight:950;color:#1f4e79;white-space:nowrap}
+#page-pos .cart-line .cl-remove{grid-column:5;justify-self:center;min-width:0;width:30px;height:30px;border:0;background:transparent;color:#9a3b3b}
+#page-pos .cart-line .cl-remove i{font-size:.7rem}
+#page-pos .pos-cart .cart-totals{border-top:2px solid #aeb5bd;margin-top:.45rem;padding-top:.45rem}
+#page-pos .pos-cart .cart-totals .r-row{font-size:.68rem}
+#page-pos .pos-cart .cart-totals .grand{font-size:1rem;padding:.45rem .5rem;border:1px solid #b9c1ca;background:#f2f4f6;border-radius:5px}
+#page-pos .pos-cart .btn-checkout{border-radius:5px;min-height:54px;font-size:.9rem;box-shadow:0 2px 5px rgba(0,0,0,.08)}
+#page-pos .search-wrap{border:1px solid #c8cdd3;border-radius:5px;background:#fff;padding:.25rem}
+#page-pos #posSearch{border:0;box-shadow:none;background:#fff;font-size:.82rem;min-height:44px}
+#page-pos .chips-row .chip{border-radius:4px}
+#page-pos .pos-item{border:1px solid #cbd1d7;border-radius:6px;background:linear-gradient(#fff,#eef1f4);box-shadow:0 1px 2px rgba(0,0,0,.05)}
+#page-pos .pos-item .p-img{border-radius:4px}
+#page-pos .pos-item .p-name{font-size:.68rem}
+#page-pos .pos-item .p-price{font-size:.68rem}
+#page-pos .pos-item .p-qty{font-size:.55rem}
+@media(max-width:900px){
+    #page-pos .pos-cashier-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+    #page-pos .pos-summary-box{min-height:70px;padding:.45rem .55rem}
+    #page-pos .pos-summary-box strong{font-size:1.08rem}
+    #page-pos .pos-summary-total strong{font-size:1.3rem}
+}
+@media(max-width:699px){
+    #page-pos .pos-cashier-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem}
+    #page-pos .pos-summary-box{min-height:65px}
+    #page-pos .pos-cart-table-head{grid-template-columns:minmax(0,1fr) 62px 62px 70px}
+    #page-pos .cart-line{grid-template-columns:minmax(0,1fr) 62px 62px 70px}
+}
+
+/* ==================== SMARTSTORE PRO v42 - FAST POS UI ====================
+   الهدف: أقل لمس + المنتجات والسلة في نفس الشاشة على الكمبيوتر والتابلت.
+   تعديل واجهة فقط؛ لا يغير منطق البيع/المخزون/المزامنة/الطباعة.
+*/
+#page-pos .pos-layout{
+    align-items:stretch;
+}
+#page-pos .pos-layout > .card:first-child{
+    min-height:clamp(520px,calc(100vh - 170px),760px);
+}
+#page-pos .pos-layout > .pos-cart{
+    position:sticky;
+    top:calc(var(--header-height,60px) + .55rem);
+    max-height:calc(100vh - var(--header-height,60px) - 1.1rem);
+    overflow:hidden;
+    display:flex;
+    flex-direction:column;
+}
+#page-pos .pos-cart .cart-lines{
+    flex:1 1 auto;
+    min-height:70px;
+    max-height:none;
+}
+#page-pos .pos-cart .cart-totals{
+    flex:0 0 auto;
+}
+#page-pos .pos-cart .btn-checkout{
+    flex:0 0 auto;
+    min-height:50px;
+    font-size:.9rem;
+    font-weight:900;
+}
+#page-pos .search-wrap{
+    position:sticky;
+    top:0;
+    z-index:4;
+    background:var(--white);
+    padding-bottom:.45rem;
+}
+#page-pos #posSearch{
+    min-height:48px;
+    font-size:.88rem;
+    font-weight:700;
+}
+#page-pos .chips-row{
+    position:sticky;
+    top:48px;
+    z-index:3;
+    background:var(--white);
+    padding:.15rem 0 .45rem;
+    overflow-x:auto;
+    scrollbar-width:none;
+}
+#page-pos .chips-row::-webkit-scrollbar{display:none}
+#page-pos .pos-grid{
+    max-height:calc(100vh - 285px);
+}
+#page-pos .pos-item{
+    min-height:132px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+}
+#page-pos .pos-item:active{transform:scale(.98)}
+#page-pos .pos-item .p-name{font-weight:800}
+#page-pos .pos-item .p-price{font-weight:800}
+#page-pos .pos-item .p-qty{font-size:.58rem}
+#page-pos .pos-cart-head{
+    flex:0 0 auto;
+}
+#page-pos .pos-cart .field-group{flex:0 0 auto}
+#page-pos .pos-cart .form-row{flex:0 0 auto}
+
+/* Tablet + desktop: keep products and basket together. */
+@media (min-width:700px){
+    #page-pos .pos-layout{
+        grid-template-columns:minmax(0,1.55fr) minmax(300px,.95fr);
+        grid-template-areas:"products cart";
+    }
+    #page-pos .pos-layout > .card:first-child{grid-area:products}
+    #page-pos .pos-layout > .pos-cart{grid-area:cart}
+    #page-pos .pos-grid{grid-template-columns:repeat(auto-fill,minmax(112px,1fr))}
+}
+
+/* Tablet portrait: compact but still side-by-side. */
+@media (min-width:700px) and (max-width:900px){
+    #page-pos .pos-layout{grid-template-columns:minmax(0,1.18fr) minmax(280px,.82fr);gap:.55rem}
+    #page-pos .pos-layout > .card{padding:.7rem}
+    #page-pos .pos-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:.4rem;max-height:calc(100vh - 260px)}
+    #page-pos .pos-item{min-height:112px;padding:.45rem}
+    #page-pos .pos-item .p-img{width:42px;height:42px}
+    #page-pos .pos-cart .card-head h3{font-size:.78rem}
+    #page-pos .pos-cart .input-field,#page-pos .pos-cart .select-field{font-size:.68rem;padding:.42rem .5rem}
+    #page-pos .pos-cart .pay-method{font-size:.61rem;padding:.4rem .25rem}
+    #page-pos .pos-cart .btn-checkout{font-size:.75rem}
+}
+
+/* Phones: one-column layout remains easier to use than a squeezed two-column POS. */
+@media (max-width:699px){
+    #page-pos .pos-layout{grid-template-columns:1fr;grid-template-areas:"products" "cart"}
+    #page-pos .pos-layout > .pos-cart{position:relative;top:auto;max-height:none}
+    #page-pos .pos-layout > .card:first-child{min-height:0}
+    #page-pos .pos-grid{max-height:360px}
+    #page-pos .search-wrap,#page-pos .chips-row{position:relative;top:auto}
+}
+
+/* Make the most important POS controls easier to hit on touch screens. */
+@media (pointer:coarse){
+    #page-pos .pos-item{min-height:124px}
+    #page-pos .pay-method{min-height:46px}
+    #page-pos .btn-checkout{min-height:52px}
+    #page-pos .qty-ctrl button,#page-pos .cl-remove{min-width:36px;min-height:36px}
+}
+
+
 </style>
+<style>
+            .r-till-meta{display:grid;grid-template-columns:repeat(3,1fr);gap:.4rem;margin-bottom:.55rem}
+            .r-till-meta>div{border:1px solid #cfd3d8;background:#f5f6f7;padding:.38rem;text-align:center}
+            .r-till-meta span{display:block;font-size:.56rem;color:#6d747c}
+            .r-till-meta strong{display:block;font-size:.72rem;margin-top:.08rem;color:#20262d}
+            .r-till-head .r-sec-title{margin-top:.2rem}
+            @media print{.r-till-meta>div{border-color:#777;background:#fff}}
+            @media(max-width:600px){.r-till-meta{grid-template-columns:1fr 1fr}.r-till-meta>div:last-child{grid-column:1/-1}}
 <style id="smartstore-v40-1-final-layout-fix">
 /* v40.1 FINAL LAYOUT SAFETY — keep page content above the fixed mobile navigation */
 html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !important; }
@@ -3230,6 +3857,152 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
   .main-content{padding-bottom:var(--mobile-nav-clearance) !important;}
 }
 </style>
+<style id="smartstore-v41-responsive-fixes">
+/* SmartStore PRO v41 — canonical responsive system (single layer)
+   قاعدة: لا نخفي بيانات الرأس على الهاتف، ولا نكرر طبقات Responsive. */
+*,*::before,*::after{box-sizing:border-box}
+html,body{width:100%;max-width:100%;overflow-x:hidden}
+.main-content,.page-section,.card,.pos-layout,.pos-layout>*{min-width:0;max-width:100%}
+
+/* Header: compact, readable, and allowed to wrap instead of hiding business data */
+.app-header{width:100%;min-width:0;max-width:100%;height:auto;min-height:var(--header-height);padding:.45rem .75rem;gap:.5rem;align-items:center}
+.header-left{min-width:0;flex:0 1 auto}
+.header-right{min-width:0;flex:1 1 auto;display:flex;align-items:center;justify-content:flex-end;gap:.35rem;flex-wrap:wrap;overflow:visible}
+.header-stat{display:inline-flex!important;align-items:center;justify-content:center;gap:.28rem;min-width:0;max-width:170px;padding:.25rem .48rem;font-size:.62rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.header-stat .val{font-size:.62rem}
+.header-user-shift{display:flex;align-items:center;gap:.25rem;min-width:0;max-width:300px}
+.header-user-shift .user-chip,.header-user-shift .shift-chip{min-width:0;max-width:135px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.header-user-shift .user-chip span,.header-user-shift .shift-chip span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* Printing/device controls */
+.printer-actions-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.55rem;margin-top:.75rem}
+.printer-actions-grid .btn{width:100%;min-width:0;white-space:normal;line-height:1.35}
+.printer-help-box{margin-top:.65rem;padding:.7rem .8rem;border:1px solid var(--gray-200);background:var(--gray-50);border-radius:12px;color:var(--gray-600);font-size:.68rem;line-height:1.7}
+.settings-save-row{display:flex;justify-content:flex-start;margin-top:.7rem}
+.settings-save-row .btn{min-width:260px}
+.cashbox-connection-status{margin-top:.5rem;display:inline-flex;align-items:center;gap:.35rem;padding:.35rem .65rem;border-radius:999px;background:var(--success-bg);color:var(--success);font-size:.62rem;font-weight:700}
+
+/* POS */
+.pos-layout{grid-template-columns:minmax(0,1.55fr) minmax(340px,1fr);grid-template-areas:"products cart";gap:.85rem}
+.pos-layout .card{overflow:hidden}
+.pos-grid{min-width:0;grid-template-columns:repeat(auto-fill,minmax(125px,1fr))}
+.pos-cart{min-width:0;overflow:hidden}
+.pos-cart-head,.pos-cart-head>div{min-width:0}
+.pos-cart-tools{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.3rem}
+.cart-lines{min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
+.cart-line{display:grid;grid-template-columns:minmax(0,1fr) auto auto auto;align-items:center;gap:.45rem;min-width:0}
+.cart-line .cl-info{min-width:0;overflow:hidden}
+.cart-line .cl-name{display:block;white-space:normal;overflow-wrap:anywhere;word-break:break-word;line-height:1.35}
+.cart-line .cl-price,.cart-line .cl-meta{white-space:normal;overflow-wrap:anywhere;line-height:1.35}
+.cart-line .pos-unit-select{width:96px;min-width:76px;max-width:120px}
+.cart-line .qty-ctrl,.cart-line .cl-remove{flex:0 0 auto}
+.cart-line .cl-remove{min-width:34px;min-height:34px}
+.pay-methods{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.4rem}
+.pay-method{min-width:0;white-space:normal;line-height:1.3;min-height:44px}
+#page-pos .form-row,#page-pos .field-group,#page-pos .input-field,#page-pos .select-field,#page-pos .search-wrap,#page-pos .search-wrap input{min-width:0;max-width:100%}
+
+/* Large phones/tablets: preserve header data; POS still stacks on phone-sized widths */
+@media(max-width:1100px){
+  .pos-layout{grid-template-columns:1fr;grid-template-areas:"products" "cart"}
+  .pos-cart{position:relative;top:auto}
+  .pos-grid{max-height:440px}
+}
+@media(max-width:768px){
+  .app-header{padding:.4rem .55rem;min-height:54px;align-items:flex-start}
+  .header-left{flex:0 1 auto;min-width:0}
+  .header-right{flex:1 1 100%;justify-content:flex-start;gap:.25rem;max-width:100%;overflow:visible}
+  .header-stat{display:inline-flex!important;flex:0 1 auto;max-width:24vw;padding:.22rem .32rem;font-size:.56rem}
+  .header-stat .val{font-size:.58rem}
+  .header-stat i{font-size:.58rem}
+  .header-user-shift{max-width:100%;flex:0 1 auto}
+  .header-user-shift .user-chip,.header-user-shift .shift-chip{max-width:25vw;font-size:.52rem;padding:.22rem .32rem}
+  .app-header .theme-btn,.app-header .notif-btn,.app-header .logout-btn{width:30px;height:30px;min-width:30px}
+  .app-header .scanner-status{display:none!important}
+  .main-content{padding-left:.65rem!important;padding-right:.65rem!important}
+  .page-title{font-size:1rem;line-height:1.5}
+  .printer-actions-grid{grid-template-columns:1fr 1fr}
+  .settings-save-row .btn{width:100%;min-width:0}
+  .settings-credentials-row{grid-template-columns:1fr!important}
+  .pos-layout{gap:.65rem}
+  .pos-grid{grid-template-columns:repeat(3,minmax(0,1fr));gap:.45rem;max-height:360px}
+  .pos-item{padding:.55rem;min-width:0}
+  .pos-item .p-name{font-size:.66rem;white-space:normal;line-height:1.25;min-height:2.5em}
+  .pos-item .p-price{font-size:.68rem}
+  .pos-item .p-img{width:40px;height:40px}
+  .cart-line{gap:.35rem;padding:.6rem 0}
+  .cart-line .cl-name{font-size:.74rem}
+  .cart-line .cl-price,.cart-line .cl-meta{font-size:.58rem}
+  .cart-line .pos-unit-select{width:82px;min-width:68px;font-size:.62rem;padding:.4rem .35rem}
+  .qty-ctrl button{width:32px;height:32px;font-size:.8rem}
+  .qty-ctrl span{min-width:24px;font-size:.72rem}
+  .pay-methods{grid-template-columns:1fr 1fr}
+  #page-pos .form-row[style*="grid-template-columns:1fr 1fr"]{grid-template-columns:1fr!important}
+}
+@media(max-width:430px){
+  .app-header{padding:.35rem .35rem;flex-wrap:wrap}
+  .header-left{flex:1 1 auto}
+  .header-right{flex:1 1 100%;width:100%;justify-content:flex-start;order:3}
+  .header-stat{max-width:31vw;font-size:.52rem;padding:.2rem .25rem}
+  .header-stat .val{font-size:.56rem}
+  .header-user-shift .user-chip,.header-user-shift .shift-chip{max-width:30vw;font-size:.48rem}
+  .main-content{padding-left:.45rem!important;padding-right:.45rem!important}
+  .card{padding:.7rem!important}
+  .printer-actions-grid{grid-template-columns:1fr}
+  .pos-grid{grid-template-columns:repeat(2,minmax(0,1fr));max-height:320px}
+  .pos-cart-tools .btn{font-size:.58rem;padding:.35rem .45rem}
+  .cart-line{grid-template-columns:minmax(0,1fr) auto auto}
+  .cart-line .cl-info{grid-column:1 / -1}
+  .cart-line .pos-unit-select{width:100px}
+  .cart-line .qty-ctrl{justify-self:start}
+  .cart-line .cl-remove{justify-self:end}
+  .pay-methods{grid-template-columns:1fr 1fr}
+  .pay-method{font-size:.62rem;padding:.45rem .25rem}
+  .form-row{grid-template-columns:1fr!important}
+}
+@media(max-width:320px){
+  .header-stat{max-width:46vw}
+  .header-user-shift .user-chip,.header-user-shift .shift-chip{max-width:42vw}
+  .main-content{padding-left:.3rem!important;padding-right:.3rem!important}
+  .card{padding:.55rem!important}
+  .page-title{font-size:.82rem}
+  .pos-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:.3rem}
+  .pos-item{padding:.4rem}
+  .pos-item .p-img{width:34px;height:34px}
+  .pos-item .p-name{font-size:.6rem}
+  .pos-item .p-price{font-size:.62rem}
+  .cart-line .cl-name{font-size:.68rem}
+  .cart-line .cl-price,.cart-line .cl-meta{font-size:.52rem}
+  .cart-line .pos-unit-select{width:82px;font-size:.56rem}
+  .qty-ctrl button{width:29px;height:29px}
+  .pay-method{font-size:.56rem;min-height:40px}
+  .printer-help-box{font-size:.58rem}
+}
+</style>
+<style id="smartstore-cash-device-bridge">
+        /* SmartStore Cash Counter Device Bridge */
+        .cash-device-card{margin-top:1rem;border:1px solid var(--gray-200);border-radius:16px;background:#fff;overflow:hidden}
+        .cash-device-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:1rem 1.1rem;border-bottom:1px solid var(--gray-200)}
+        .cash-device-status{display:inline-flex;align-items:center;gap:.45rem;padding:.42rem .75rem;border-radius:999px;font-size:.78rem;font-weight:700;background:#f1f5f9;color:#475569}
+        .cash-device-status.ok{background:#dcfce7;color:#166534}.cash-device-status.warn{background:#fef3c7;color:#92400e}.cash-device-status.err{background:#fee2e2;color:#991b1b}
+        .cash-device-body{padding:1rem 1.1rem}.cash-device-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.75rem}.cash-device-actions{display:flex;gap:.65rem;flex-wrap:wrap;margin-top:.9rem}.cash-device-actions .btn{min-height:44px}
+        .cash-device-read{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.65rem;margin-top:1rem}.cash-device-read .metric{padding:.75rem;border:1px solid var(--gray-200);border-radius:12px;background:#f8fafc}.cash-device-read .metric b{display:block;font-size:1.05rem;margin-top:.25rem}.cash-device-note{margin-top:.75rem;font-size:.8rem;color:var(--gray-600);line-height:1.65}
+        @media(max-width:900px){.cash-device-grid,.cash-device-read{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:520px){.cash-device-head{align-items:flex-start}.cash-device-grid,.cash-device-read{grid-template-columns:1fr}.cash-device-actions{display:grid;grid-template-columns:1fr}.cash-device-actions .btn{width:100%}.cash-device-body,.cash-device-head{padding:.85rem}.cash-device-card{border-radius:12px}}
+</style>
+<style id="smartstore-v6-pos-units">
+.pos-product-unit-picker{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.pos-product-unit-picker button{min-height:34px;padding:5px 9px;border-radius:8px}
+.pos-product-unit-picker button.active{font-weight:700}
+@media(max-width:700px){.pos-product-unit-picker{gap:5px}.pos-product-unit-picker button{flex:1 1 auto}}
+</style>
+<style id="smartstore-v7-pos-unit-bridge">
+.pos-product-unit-picker{display:flex;gap:6px;flex-wrap:wrap;margin-top:7px}
+.pos-product-unit-picker button{min-height:32px;padding:5px 9px;border:1px solid currentColor;border-radius:8px;background:transparent;cursor:pointer}
+.pos-product-unit-picker button.active{font-weight:700}
+</style>
+<style id="smartstore-v8-unit-stock-note">
+.pos-cart .unit-stock-note{font-size:.82rem;opacity:.8;margin-top:4px}
+</style>
 </head>
 <body class="auth-required">
     <div id="authScreen" role="dialog" aria-modal="true" aria-label="تسجيل الدخول">
@@ -3239,7 +4012,7 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
             <div class="auth-sub">أدخل بيانات المستخدم للمتابعة إلى لوحة المتجر</div>
             <div class="auth-error" id="authError">اسم المستخدم أو كلمة المرور غير صحيحة</div>
             <div class="field-group" style="margin-bottom:.7rem"><label>اسم المستخدم</label><input class="input-field" id="authUsername" autocomplete="username" placeholder="اسم المستخدم"></div>
-            <div class="field-group" style="margin-bottom:.9rem"><label>كلمة المرور</label><input class="input-field" id="authPassword" type="password" autocomplete="current-password" placeholder="كلمة المرور"></div>
+            <div class="field-group" style="margin-bottom:.9rem"><label>كلمة المرور</label><div class="password-field-wrap"><input class="input-field" id="authPassword" type="password" autocomplete="current-password" placeholder="كلمة المرور"><button class="password-toggle" id="authPasswordToggle" type="button" aria-label="إظهار كلمة المرور" title="إظهار كلمة المرور"><i class="fas fa-eye"></i></button></div></div>
             <button type="submit" class="btn btn-primary" id="btnLogin" style="width:100%;padding:.7rem"><span class="auth-login-icon"><i class="fas fa-right-to-bracket"></i></span><span class="auth-login-spinner" aria-hidden="true"></span><span class="auth-login-text">دخول</span></button>
             <div class="auth-meta"><span>إدارة محلية للمتجر</span><span>يمكن تغيير بيانات الدخول من الإعدادات</span></div>
         </form>
@@ -3341,7 +4114,7 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                     <!-- الإعدادات صفحة مستقلة كما هي في الموقع الأصلي -->
                     <a data-page="settings"><i class="fas fa-cog"></i> الإعدادات</a>
                 </nav>
-                <div class="sidebar-foot">© 2026 SmartStore PRO v38 Full Audit & Stability</div>
+                <div class="sidebar-foot">© 2026 SmartStore PRO</div>
             </aside>
 
             <!-- ==================== MAIN CONTENT ==================== -->
@@ -3406,7 +4179,13 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
 
                 <!-- ======== POS PAGE ======== -->
                 <section class="page-section" id="page-pos">
-                    <h1 class="page-title"><i class="fas fa-cash-register"></i> نقطة البيع <small>بيع سريع بمسح الباركود أو الضغط على المنتج</small></h1>
+                    <h1 class="page-title"><i class="fas fa-cash-register"></i> نقطة البيع <small>واجهة كاشير سريعة — المنتجات والسلة معًا</small></h1>
+                    <div class="pos-cashier-summary" aria-label="ملخص الفاتورة الحالية">
+                        <div class="pos-summary-box pos-summary-invoice"><span>رقم الفاتورة</span><strong id="posLiveInvoiceNo">جديدة</strong><small id="posLiveShift">الوردية الحالية</small></div>
+                        <div class="pos-summary-box pos-summary-total"><span>إجمالي الفاتورة</span><strong id="posLiveGrand">0.00 ج.م</strong><small>المطلوب</small></div>
+                        <div class="pos-summary-box pos-summary-paid"><span>المدفوع</span><strong id="posLivePaid">0.00 ج.م</strong><small>المبلغ المستلم</small></div>
+                        <div class="pos-summary-box pos-summary-change"><span>الباقي</span><strong id="posLiveChange">0.00 ج.م</strong><small>لصالح العميل</small></div>
+                    </div>
                     <div class="pos-layout">
                         <div class="card">
                 
@@ -3425,6 +4204,7 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                                 <select class="select-field" id="posCustomer"></select>
                                 <small class="smart-search-hint">اتركه فارغًا للبيع النقدي بدون حساب</small>
                             </div>
+                            <div class="pos-cart-table-head" aria-hidden="true"><span>الصنف</span><span>الوحدة</span><span>الكمية</span><span>الإجمالي</span><span>حذف</span></div>
                             <div class="cart-lines" id="posCartLines"></div>
                             <div class="form-row" style="grid-template-columns:1fr 1fr;margin-bottom:0.4rem;">
                                 <div class="field-group"><label>خصم %</label><input type="number" class="input-field" id="posDiscount" value="0" min="0" max="100"></div>
@@ -3493,7 +4273,14 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                                     <button class="btn btn-primary" id="btnCaptureScaleWeight" type="button"><i class="fas fa-weight-scale"></i> قراءة الوزن الآن</button>
                                     <button class="btn btn-success" id="btnWeighAndPrint" type="button"><i class="fas fa-barcode"></i> وزن + اسم + سعر + باركود</button>
                                 </div>
-                                <div class="scale-hint">يدعم موازين USB/Serial التي ترسل الوزن كنص. يجب استخدام Chrome/Edge على HTTPS أو localhost.</div>
+                                <div class="scale-connection-settings" style="display:grid;grid-template-columns:repeat(5,minmax(100px,1fr));gap:.55rem;margin-top:.7rem;">
+                                    <div class="field-group"><label>بروتوكول الميزان</label><select class="input-field" id="scaleProtocol"><option value="ascii">Checkout / ASCII مستمر</option><option value="8217">Mettler Toledo 8217</option></select></div>
+                                    <div class="field-group"><label>Baud</label><select class="input-field" id="scaleBaud"><option value="1200">1200</option><option value="2400">2400</option><option value="4800">4800</option><option value="9600" selected>9600</option><option value="19200">19200</option><option value="38400">38400</option><option value="57600">57600</option><option value="115200">115200</option></select></div>
+                                    <div class="field-group"><label>Parity</label><select class="input-field" id="scaleParity"><option value="none" selected>None</option><option value="even">Even</option><option value="odd">Odd</option></select></div>
+                                    <div class="field-group"><label>Data bits</label><select class="input-field" id="scaleDataBits"><option value="7">7</option><option value="8" selected>8</option></select></div>
+                                    <div class="field-group"><label>Stop bits</label><select class="input-field" id="scaleStopBits"><option value="1" selected>1</option><option value="2">2</option></select></div>
+                                </div>
+                                <div class="scale-hint" id="scaleConnectionHint">يدعم موازين Checkout عبر USB/Serial. الوضع الافتراضي ASCII مستمر 9600/8/N/1. لموازين Mettler Toledo 8217 استخدم بروتوكول 8217، وعادةً 9600/7/E/1.</div>
                             </div>
                             <div class="scale-workflow">
                                 <div class="workflow-step"><span>1</span><div><b>اتصل بالميزان</b><small>اختر منفذ USB/Serial واضبط سرعة الاتصال.</small></div></div>
@@ -3623,8 +4410,9 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                                 <input type="number" class="input-field" id="prodBoxes" min="0" step="1" placeholder="0">
                             </div>
                             <div class="field-group" id="prodLooseFields" style="display:none;">
-                                <label>الوحدات المفردة</label>
+                                <label>عدد القطع المفردة</label>
                                 <input type="number" class="input-field" id="prodLoosePieces" min="0" step="0.001" placeholder="0">
+                                <small style="display:block;color:var(--gray-500);margin-top:4px;">القطع الموجودة خارج العلب/الكرتون وتُضاف إلى إجمالي المخزون.</small>
                             </div>
                             <div class="field-group" id="prodPieceQtyField">
                                 <label>الكمية المتاحة</label>
@@ -4268,7 +5056,7 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                     <div class="finance-hero">
                         <div>
                             <div class="finance-kicker"><i class="fas fa-vault"></i> الخزنة النقدية</div>
-                            <h1>جرد وإدارة الخزنة</h1>
+                            <h1>جرد وإدارة الخزنة</h1><div id="cashboxConnectionStatus" class="cashbox-connection-status"><i class="fas fa-circle-check"></i> الخزنة تعمل محليًا داخل النظام — لا تحتاج إلى اتصال بالطابعة أو الإنترنت</div>
                             <p>سجل فعلي لفئات النقد داخل الخزنة، مع إدخال الأموال ومطابقة الجرد مع الرصيد المتوقع.</p>
                         </div>
                         <div class="finance-actions">
@@ -4277,6 +5065,34 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                             <button class="btn finance-glass" id="btnCashboxCount"><i class="fas fa-clipboard-check"></i> حفظ جرد فعلي</button>
                         </div>
                     </div>
+                        <div class="cash-device-card" id="cashDeviceBridge">
+                            <div class="cash-device-head">
+                                <div><strong><i class="fas fa-microchip"></i> جهاز جرد الخزنة الفعلي</strong><div class="cash-device-note" style="margin-top:.2rem">واجهة جاهزة لربط جهاز عدّ/جرد النقد الحقيقي لاحقًا عبر جهاز الكاشير.</div></div>
+                                <span id="cashDeviceStatus" class="cash-device-status"><i class="fas fa-circle"></i> غير متصل</span>
+                            </div>
+                            <div class="cash-device-body">
+                                <div class="cash-device-grid">
+                                    <div class="field-group"><label>طريقة الاتصال</label><select class="select-field" id="cashDeviceTransport"><option value="auto">تلقائي</option><option value="usb-serial">USB / Serial (COM)</option><option value="bluetooth-spp">Bluetooth SPP / COM</option><option value="hid">USB / Bluetooth HID</option></select></div>
+                                    <div class="field-group"><label>الجهاز</label><select class="select-field" id="cashDeviceId"><option value="">لم يتم اكتشاف جهاز</option></select></div>
+                                    <div class="field-group"><label>وضع القراءة</label><select class="select-field" id="cashDeviceMode"><option value="mix">جرد مختلط بالقيمة والفئة</option><option value="denomination">قراءة الفئات فقط</option><option value="total">الإجمالي فقط</option></select></div>
+                                    <div class="field-group"><label>ربط النتيجة</label><select class="select-field" id="cashDeviceApplyMode"><option value="preview">عرض ومراجعة قبل الحفظ</option><option value="count">حفظ كجرد فعلي</option></select></div>
+                                </div>
+                                <div class="cash-device-actions">
+                                    <button class="btn btn-primary" id="btnCashDeviceDiscover" type="button"><i class="fas fa-magnifying-glass"></i> اكتشاف الجهاز</button>
+                                    <button class="btn btn-outline" id="btnCashDeviceConnect" type="button"><i class="fas fa-plug"></i> اتصال</button>
+                                    <button class="btn btn-outline" id="btnCashDeviceRead" type="button"><i class="fas fa-download"></i> قراءة الجرد</button>
+                                    <button class="btn btn-success" id="btnCashDeviceApply" type="button"><i class="fas fa-check"></i> اعتماد نتيجة الجرد</button>
+                                    <button class="btn btn-outline" id="btnCashDeviceDisconnect" type="button"><i class="fas fa-link-slash"></i> فصل</button>
+                                </div>
+                                <div class="cash-device-read">
+                                    <div class="metric"><span>الإجمالي المقروء</span><b id="cashDeviceTotal">0 ج.م</b></div>
+                                    <div class="metric"><span>الرصيد المتوقع</span><b id="cashDeviceExpected">0 ج.م</b></div>
+                                    <div class="metric"><span>الفرق</span><b id="cashDeviceVariance">0 ج.م</b></div>
+                                    <div class="metric"><span>آخر قراءة</span><b id="cashDeviceLastRead">—</b></div>
+                                </div>
+                                <div id="cashDeviceHelp" class="alert-bar info show" style="display:flex;margin-top:.75rem"><i class="fas fa-circle-info"></i> لا يوجد جهاز متصل حاليًا. الواجهة لا تدّعي وجود جهاز؛ عند توفره سيتم اختيار برنامج التشغيل المناسب حسب طريقة USB/Bluetooth التي يدعمها الجهاز.</div>
+                            </div>
+                        </div>
                     <div class="finance-kpis">
                         <div class="finance-kpi kpi-cash"><span class="fk-icon"><i class="fas fa-vault"></i></span><span><b id="cashboxTotal">0 ج.م</b><small>إجمالي رصيد الخزنة</small></span></div>
                         <div class="finance-kpi kpi-stock"><span class="fk-icon"><i class="fas fa-coins"></i></span><span><b id="cashboxKnown">0 ج.م</b><small>النقد الموزع على الفئات</small></span></div>
@@ -4287,7 +5103,7 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                             <div class="card-head"><h2><i class="fas fa-money-bill-wave"></i> الفئات الموجودة فعليًا</h2><span class="badge-pill">جرد نقدي</span></div>
                             <div id="cashboxDenoms" class="cashbox-denoms"></div>
                             <div class="cashbox-total-row"><span>إجمالي الفئات</span><strong id="cashboxDenomTotal">0 ج.م</strong></div>
-                            <div class="alert-bar info show" style="display:flex;margin-top:.8rem"><i class="fas fa-circle-info"></i> مثال: 200×1 + 100×3 + 50×1 + 20×1 = 570 ج.م. المبيعات النقدية تُسجل تلقائيًا، وتظهر مؤقتًا كـ «غير موزع» حتى تُدخل فئاتها الفعلية.</div>
+                            <div class="alert-bar info show" style="display:flex;margin-top:.8rem"><i class="fas fa-circle-info"></i> الجرد يحسب الفئات الموجودة فعليًا. عند البيع، يضاف المبلغ المستلم ويُخصم الباقي الذي أُعطي للعميل، لذلك فاتورة 80 ج.م ودفع 100 ج.م وباقي 20 ج.م تزيد الخزنة فعليًا 80 ج.م فقط.</div>
                         </div>
                         <div class="card">
                             <div class="card-head"><h2><i class="fas fa-right-left"></i> حركة نقدية</h2></div>
@@ -4490,15 +5306,18 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                         <div class="btn-group"><button id="btnSaveSettings" class="btn btn-primary"><i class="fas fa-save"></i> حفظ الإعدادات</button></div>
                     </div>
                     <div class="card">
-                        <div class="card-head"><h2><i class="fas fa-user-shield"></i> بيانات دخول النظام</h2><span class="badge-pill">تغيير فوري</span></div>
+                        <div class="card-head"><h2><i class="fas fa-user-shield"></i> بيانات دخول النظام</h2><span class="badge-pill">يتم الحفظ عند الضغط على الزر</span></div>
                         <div class="alert-bar info show" style="display:flex"><i class="fas fa-circle-info"></i><span>هذه بيانات حسابك الحالي. المدير يستطيع إدارة حسابات الموظفين من صفحة الموظفين، والموظف يرى ويغيّر بيانات حسابه فقط.</span></div>
-                        <div class="form-row">
+                        <div class="form-row settings-credentials-row">
                             <div class="field-group"><label>اسم المستخدم الخاص بي</label><input class="input-field" id="setAuthUsername" autocomplete="username"></div>
-                            <div class="field-group"><label>الرقم السري الخاص بي</label><input class="input-field" id="setAuthPassword" type="password" autocomplete="new-password"></div>
+                            <div class="field-group"><label>الرقم السري الخاص بي</label><div class="password-field-wrap"><input class="input-field" id="setAuthPassword" type="password" autocomplete="new-password"><button class="password-toggle" id="settingsPasswordToggle" type="button" aria-label="إظهار الرقم السري" title="إظهار الرقم السري"><i class="fas fa-eye"></i></button></div></div>
+                        </div>
+                        <div class="settings-save-row">
+                            <button id="btnSaveCredentials" type="button" class="btn btn-primary"><i class="fas fa-save"></i> حفظ تغييرات اسم المستخدم والرقم السري</button>
                         </div>
                     </div>
                     <div class="card" id="securitySettingsCard">
-                        <div class="card-head"><h2><i class="fas fa-shield-halved"></i> الأمان والتحكم في الجلسة</h2><span class="badge-pill">V36</span></div>
+                        <div class="card-head"><h2><i class="fas fa-shield-halved"></i> الأمان والتحكم في الجلسة</h2><span class="badge-pill">V1.1</span></div>
                         <div class="form-row">
                             <div class="field-group"><label>قفل تلقائي عند الخمول</label><select class="select-field" id="setSecurityTimeout"><option value="0">معطل</option><option value="5">5 دقائق</option><option value="10">10 دقائق</option><option value="15">15 دقيقة</option><option value="30">30 دقيقة</option><option value="60">60 دقيقة</option></select></div>
                             <div class="field-group"><label>الحد الأقصى لمحاولات الدخول</label><select class="select-field" id="setSecurityMaxAttempts"><option value="3">3 محاولات</option><option value="5">5 محاولات</option><option value="10">10 محاولات</option></select></div>
@@ -4508,7 +5327,7 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                         <div class="alert-bar info show" style="display:flex;margin-top:.65rem"><i class="fas fa-circle-info"></i> بعد القفل تبقى البيانات والجلسة محفوظة، ويحتاج المستخدم الحالي إلى الرقم السري لإعادة الفتح. محاولات الدخول الفاشلة تُسجل وتُحظر مؤقتًا حسب السياسة.</div>
                     </div>
                     <div class="card" id="permissionsSettingsCard">
-                        <div class="card-head"><h2><i class="fas fa-user-lock"></i> الصلاحيات الدقيقة لكل إجراء</h2><span class="badge-pill">V37</span></div>
+                        <div class="card-head"><h2><i class="fas fa-user-lock"></i> الصلاحيات الدقيقة لكل إجراء</h2><span class="badge-pill">V1.1</span></div>
                         <div class="alert-bar info show" style="display:flex"><i class="fas fa-circle-info"></i><span>يتم التحكم في العمليات الحساسة على مستوى الإجراء، وليس الصفحة فقط. مدير النظام يتجاوز جميع القيود، بينما يمكن تخصيص كل دور على حدة.</span></div>
                         <div class="btn-group"><button class="btn btn-outline" onclick="savePermissionPreset('default')"><i class="fas fa-wand-magic-sparkles"></i> القالب الافتراضي</button><button class="btn btn-outline" onclick="savePermissionPreset('strict')"><i class="fas fa-lock"></i> قالب مشدّد</button></div>
                         <div id="permissionMatrix" class="perm-grid" style="margin-top:.8rem"></div>
@@ -4521,11 +5340,13 @@ html, body { width:100%; max-width:100%; min-width:0; overflow-x:hidden !importa
                             <div class="field-group"><label>طريقة الطباعة</label><select class="select-field" id="setPrinterMode"><option value="system">طابعة النظام / نافذة الطباعة</option><option value="serial">طابعة حرارية (USB / Bluetooth / Print Agent)</option></select></div>
                             <div class="field-group"><label>عرض الورق</label><select class="select-field" id="setPaperWidth"><option value="58">58 مم</option><option value="80">80 مم</option></select></div>
                         </div>
-                        <div class="btn-group">
-                            <button id="btnConnectPrinter" class="btn btn-outline"><i class="fas fa-plug"></i> توصيل الطابعة الحرارية</button>
-                            <button id="btnTestPrinter" class="btn btn-success"><i class="fas fa-print"></i> طباعة اختبار</button>
+                        <div class="printer-actions-grid">
+                            <button id="btnConnectPrinter" class="btn btn-primary" type="button"><i class="fas fa-print"></i> فحص طابعات Windows / Print Agent</button>
+                            <button id="btnConnectUSBPrinter" class="btn btn-outline" type="button"><i class="fas fa-usb"></i> USB مباشر</button>
+                            <button id="btnConnectBluetoothPrinter" class="btn btn-outline" type="button"><i class="fab fa-bluetooth-b"></i> Bluetooth مباشر</button>
+                            <button id="btnTestPrinter" class="btn btn-success" type="button"><i class="fas fa-print"></i> طباعة اختبار</button>
                         </div>
-                        <small id="printerHelp" style="display:block;margin-top:.65rem;color:var(--gray-500);">يمكن الاتصال بالطابعة الحرارية عبر USB/Serial أو Bluetooth إذا كان المتصفح يدعم ذلك، أو عبر Print Agent للطابعات المثبتة على Windows.</small>
+                        <div id="printerHelp" class="printer-help-box" role="status">الطريقة الموصى بها على أجهزة Windows: ثبّت الطابعة USB أو Bluetooth في Windows ثم استخدم «فحص طابعات Windows / Print Agent». لا يعتمد النظام على Web Serial في الهاتف.</div>
                         <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--gray-200);">
                             <h3 style="font-size:.95rem;margin-bottom:.7rem"><i class="fas fa-box-open"></i> درج النقود / الخزنة</h3>
                             <div class="form-row">
@@ -4906,13 +5727,44 @@ function cashboxApplyDenominations(counts, direction, note, options) {
 
             // Restored core function from v20: cashboxApplySaleDenominations
 function cashboxApplySaleDenominations(received, returned, saleAmount, note, meta){
-                var check=cashboxValidateSaleDenominations(received,returned,saleAmount,meta), c=ensureCashbox(), keys=CASH_DENOMS_UI.map(String);
-                keys.forEach(function(k){ c.denominations[k]=Math.max(0,Math.floor(num(c.denominations[k])))+check.received[k]-check.returned[k]; });
-                var physicalNet=Math.max(0,check.cashNet);
-                c.movements.push({id:uid(),date:Date.now(),type:'in',amount:physicalNet,note:note||'بيع نقدي',meta:Object.assign({},meta||{},
-                    {source:'pos-sale-auto-cashflow',receivedDenominations:check.received,changeDenominations:check.returned,net:physicalNet,unsettledChange:check.unsettledChange||0})});
+                meta=meta||{};
+                var check=cashboxValidateSaleDenominations(received,returned,saleAmount,meta);
+                if(!check.ok)return check;
+                var c=ensureCashbox(), keys=CASH_DENOMS_UI.map(String);
+                var beforeTotal=cashboxTotal();
+                keys.forEach(function(k){
+                    var current=Math.max(0,Math.floor(num(c.denominations[k])));
+                    var after=current+check.received[k]-check.returned[k];
+                    if(after<0) after=0;
+                    c.denominations[k]=after;
+                });
+
+                // إذا تعذر تمثيل الباقي بالفئات الموجودة، لا نوقف البيع.
+                // نُبقي الحساب المالي صحيحًا (الخزنة تزيد بقيمة البيع فقط)،
+                // ثم نعيد توزيع الرصيد النهائي على الفئات.
+                if(check.unsettledChange>0 && meta.allowUnsettledChange){
+                    var targetTotal=Math.max(0,beforeTotal+check.total);
+                    cashboxRebalanceDenominations(targetTotal);
+                }
+
+                // المبلغ الذي يبقى في الخزنة هو قيمة البيع فقط، وليس كامل المبلغ الذي دفعه العميل.
+                // مثال 80 بيع + 100 مدفوع - 20 باقي = +80 للخزنة.
+                var physicalNet=check.cashNet;
+                c.movements.push({
+                    id:uid(),date:Date.now(),type:'in',amount:physicalNet,note:note||'بيع نقدي',
+                    meta:Object.assign({},meta||{},{
+                        source:'pos-sale-auto-cashflow',
+                        receivedDenominations:check.received,
+                        changeDenominations:check.returned,
+                        tendered:check.tendered,
+                        change:check.change,
+                        saleAmount:check.total,
+                        net:physicalNet
+                    })
+                });
                 if(c.movements.length>300)c.movements=c.movements.slice(-300);
-                c.lastCount={date:Date.now(),counted:cashboxKnownTotal()+num(c.unallocated),expected:cashboxTotal(),variance:0}; save(); return check;
+                c.lastCount={date:Date.now(),counted:cashboxKnownTotal()+num(c.unallocated),expected:cashboxTotal(),variance:0};
+                save(); return check;
             }
 
             // Restored core function from v20: cashboxAutoSaleDenominations
@@ -4921,10 +5773,16 @@ function cashboxAutoSaleDenominations(tendered, change){
                 var received=suggestDenoms(tendered,null).counts;
                 var available=cashboxAvailableAfterReceived(received);
                 var ch=suggestDenoms(change,available);
+                if(ch.remaining>0){
+                    // الباقي غير قابل للتمثيل بالفئات الحالية: لا نوقف البيع.
+                    // سيتم اعتماد البيع ثم إعادة توزيع رصيد الخزنة النهائي تلقائيًا.
+                    return {ok:true,received:received,returned:{},tendered:tendered,change:change,
+                        cashReturned:0,unsettledChange:change,cashNet:tendered-change,
+                        autoRebalanced:true};
+                }
                 var cashReturned=sumDenomCounts(ch.counts);
                 return {ok:true,received:received,returned:ch.counts,tendered:tendered,change:change,
-                    cashReturned:cashReturned,unsettledChange:Math.max(0,change-cashReturned),
-                    cashNet:Math.max(0,tendered-cashReturned)};
+                    cashReturned:cashReturned,unsettledChange:0,cashNet:tendered-cashReturned};
             }
 
             // Restored core function from v20: cashboxKnownTotal
@@ -4968,11 +5826,49 @@ function cashboxTotal() {
 
             // Restored core function from v20: cashboxValidateSaleDenominations
 function cashboxValidateSaleDenominations(received, returned, saleAmount, meta){
+                meta=meta||{};
                 var keys=CASH_DENOMS_UI.map(String), rec={}, ret={}, recTotal=0, retTotal=0;
-                keys.forEach(function(k){ rec[k]=Math.max(0,Math.floor(num(received&&received[k]))); ret[k]=Math.max(0,Math.floor(num(returned&&returned[k]))); recTotal+=Number(k)*rec[k]; retTotal+=Number(k)*ret[k]; });
-                var tendered=num(meta&&meta.tendered), change=num(meta&&meta.change);
-                return {ok:true,received:rec,returned:ret,total:num(saleAmount),tendered:tendered,change:change,cashReturned:retTotal,
-                    unsettledChange:Math.max(0,change-retTotal),cashNet:Math.max(0,recTotal-retTotal)};
+                keys.forEach(function(k){
+                    rec[k]=Math.max(0,Math.floor(num(received&&received[k])));
+                    ret[k]=Math.max(0,Math.floor(num(returned&&returned[k])));
+                    recTotal+=Number(k)*rec[k]; retTotal+=Number(k)*ret[k];
+                });
+                var tendered=num(meta.tendered), change=Math.max(0,num(meta.change));
+                var expectedSale=Math.max(0,num(saleAmount));
+                var errors=[];
+                var allowUnsettled=!!meta.allowUnsettledChange;
+                if(Math.abs(recTotal-tendered)>0.0001) errors.push('فئات المبلغ المستلم لا تساوي المبلغ المدفوع');
+                if(!allowUnsettled && Math.abs(retTotal-change)>0.0001) errors.push('فئات الباقي لا تساوي الباقي المطلوب');
+                if(tendered+0.0001<expectedSale) errors.push('المبلغ المدفوع أقل من إجمالي البيع');
+                if(retTotal-0.0001>tendered) errors.push('الباقي أكبر من المبلغ المدفوع');
+                if(!allowUnsettled && Math.abs((tendered-retTotal)-expectedSale)>0.0001) errors.push('صافي النقد بعد الباقي لا يساوي قيمة البيع');
+                var unsettled=Math.max(0,change-retTotal);
+                return {
+                    ok:errors.length===0,
+                    message:errors.join(' — '),
+                    received:rec, returned:ret, total:expectedSale, tendered:tendered, change:change,
+                    cashReturned:retTotal, unsettledChange:unsettled,
+                    cashNet:allowUnsettled ? expectedSale : Math.max(0,tendered-retTotal),
+                    receivedTotal:recTotal, returnedTotal:retTotal
+                };
+            }
+
+            // إعادة توزيع تلقائية للفئات عند تعذر صرف الباقي بالفئات الحالية.
+            // لا تغيّر إجمالي الخزنة؛ فقط تعيد تمثيل الرصيد النهائي بفئات نقدية قابلة للعد.
+            function cashboxRebalanceDenominations(targetTotal){
+                var c=ensureCashbox(), cents=Math.round(Math.max(0,num(targetTotal))*100);
+                CASH_DENOMS_UI.forEach(function(d){ c.denominations[String(d)]=0; });
+                c.unallocated=0;
+                for(var i=0;i<CASH_DENOMS_UI.length;i++){
+                    var d=CASH_DENOMS_UI[i], dc=Math.round(d*100);
+                    if(dc<=0) continue;
+                    var q=Math.floor(cents/dc);
+                    if(q>0){
+                        c.denominations[String(d)]=q;
+                        cents-=q*dc;
+                    }
+                }
+                if(cents>0) c.unallocated=cents/100;
             }
 
             // Restored core function from v20: custBal
@@ -5624,7 +6520,7 @@ function unitOptionsForProduct(p) {
                 setTimeout(function() {
                     t.style.opacity = '0'; t.style.transition = '0.3s';
                     setTimeout(function() { if(t.parentNode) t.remove(); }, 300);
-                }, 2000);
+                }, 3500);
             }
             function logActivity(text, icon, color) {
                 icon = icon || 'fa-circle-info'; color = color || 'blue';
@@ -5692,7 +6588,7 @@ function unitOptionsForProduct(p) {
                 txt('hdr-supp-debt', money(totalSuppDebit()));
                 txt('hdr-trx-count', DB.transactions.length + ' معاملة');
                 var hu=$('#hdrUser'), hs=$('#hdrShift'), u=getCurrentUser(), sh=currentShift();
-                if(hu) hu.innerHTML='<i class="fas fa-user"></i><span>'+esc(u.name||u.username)+'</span>';
+                if(hu) hu.innerHTML='<i class="fas fa-user"></i><span>'+esc(u.username||u.name||'—')+'</span>';
                 if(hs){hs.classList.toggle('open',!!sh);hs.classList.toggle('closed',!sh);hs.innerHTML='<i class="fas fa-user-clock"></i><span>'+(sh?'مستلم: '+esc(sh.name||sh.username):'لا توجد وردية')+'</span>';}
                 var size = new Blob([JSON.stringify(DB)]).size / 1024;
                 txt('dataSize', size.toFixed(1));
@@ -5967,8 +6863,44 @@ function unitOptionsForProduct(p) {
             window.printWeightedBarcodeLabel=printWeightedBarcodeLabel;
 
             // ==================== SMART ELECTRONIC SCALE ====================
-            var scalePort = null, scaleReader = null, scaleReadLoopActive = false;
+            // اتصال مخصص لموازين Checkout عبر USB/Serial. لا يلمس منطق POS أو الطباعة.
+            var scalePort = null, scaleReader = null, scaleWriter = null, scaleReadLoopActive = false;
             var scaleLatestWeightKg = 0, scaleLastWeightAt = 0, scaleBuffer = '';
+            var scalePollTimer = null, scaleConfig = {protocol:'ascii',baudRate:9600,parity:'none',dataBits:8,stopBits:1};
+
+            function loadScaleConfig(){
+                var c=(DB.settings&&DB.settings.scaleConnection)||{};
+                scaleConfig={
+                    protocol:c.protocol==='8217'?'8217':'ascii',
+                    baudRate:[1200,2400,4800,9600,19200,38400,57600,115200].indexOf(Number(c.baudRate))>=0?Number(c.baudRate):9600,
+                    parity:['none','even','odd'].indexOf(c.parity)>=0?c.parity:'none',
+                    dataBits:Number(c.dataBits)===7?7:8,
+                    stopBits:Number(c.stopBits)===2?2:1
+                };
+                var ids=[['scaleProtocol',scaleConfig.protocol],['scaleBaud',String(scaleConfig.baudRate)],['scaleParity',scaleConfig.parity],['scaleDataBits',String(scaleConfig.dataBits)],['scaleStopBits',String(scaleConfig.stopBits)]];
+                ids.forEach(function(x){setVal(x[0],x[1]);});
+                updateScaleConfigHint();
+            }
+            function saveScaleConfigFromUI(){
+                scaleConfig.protocol=val('scaleProtocol')==='8217'?'8217':'ascii';
+                scaleConfig.baudRate=parseInt(val('scaleBaud'),10)||9600;
+                scaleConfig.parity=['none','even','odd'].indexOf(val('scaleParity'))>=0?val('scaleParity'):'none';
+                scaleConfig.dataBits=Number(val('scaleDataBits'))===7?7:8;
+                scaleConfig.stopBits=Number(val('scaleStopBits'))===2?2:1;
+                DB.settings=DB.settings||{};
+                DB.settings.scaleConnection=Object.assign({},scaleConfig);
+                save();
+                updateScaleConfigHint();
+            }
+            function updateScaleConfigHint(){
+                var h=$('#scaleConnectionHint');
+                if(!h)return;
+                if(scaleConfig.protocol==='8217'){
+                    h.textContent='Mettler Toledo 8217: اتصال RS-232/USB Virtual COM بطلب W. الإعداد المعتاد 9600/7/E/1، والبرنامج يطلب الوزن تلقائيًا كل 300 مللي ثانية.';
+                }else{
+                    h.textContent='Checkout / ASCII مستمر: الميزان يرسل الوزن تلقائيًا عبر USB/Serial. الإعداد الافتراضي 9600/8/N/1. إذا كان كتيب الميزان يحدد قيمًا أخرى اخترها هنا.';
+                }
+            }
 
             function setScaleStatus(connected, text){
                 var el=$('#scaleStatus'), tx=$('#scaleStatusText');
@@ -5984,27 +6916,51 @@ function unitOptionsForProduct(p) {
                 txt('scaleLiveText',source || 'تم تحديث الوزن');
             }
             function parseScaleWeight(text){
-                text=String(text||'').replace(/\u0002|\u0003|\r/g,' ').trim();
-                if(!text) return null;
-                // يفضل الرقم المصحوب بوحدة؛ g/gram يتم تحويله إلى كجم.
+                text=String(text||'').replace(/[\u0002\u0003\u0004\u0005\u0006\u0011\u0015]/g,' ').replace(/\r/g,' ').trim();
+                if(!text)return null;
+                // Mettler 8217: قد يأتي الرد مع KG/LB/N وحقول حالة. نبحث أولاً عن رقم وزن صالح.
                 var m=text.match(/([-+]?\d+(?:[.,]\d+)?)\s*(kg|kgs|kilo|kilogram|كجم|كيلو|g|gram|grams|جرام|غرام)\b/i);
                 if(m){
                     var v=parseFloat(m[1].replace(',','.'));
-                    if(!isFinite(v)) return null;
+                    if(!isFinite(v))return null;
                     var unit=String(m[2]).toLowerCase();
-                    if(/^(g|gram|grams|جرام|غرام)$/.test(unit)) v/=1000;
+                    if(/^(g|gram|grams|جرام|غرام)$/.test(unit))v/=1000;
                     return v;
                 }
-                // تنسيق شائع: ST,GS,+ 1.250 أو 1.250 فقط
-                var n=text.match(/(?:^|[^\d])([-+]?\d{1,4}(?:[.,]\d{1,3})?)(?:\s|$)/);
-                if(n){
-                    var x=parseFloat(n[1].replace(',','.'));
-                    return isFinite(x) && x>=0 && x<1000 ? x : null;
+                // بروتوكولات Checkout الشائعة ترسل STX + sign + digits + decimal + ETX أو نصًا مشابهًا.
+                var cleaned=text.replace(/[^0-9+.,-]/g,' ');
+                var matches=cleaned.match(/[-+]?\d{1,6}(?:[.,]\d{1,4})?/g);
+                if(matches&&matches.length){
+                    for(var mi=matches.length-1;mi>=0;mi--){
+                        var x=parseFloat(matches[mi].replace(',','.'));
+                        if(isFinite(x)&&x>=0&&x<1000)return x;
+                    }
                 }
+                // تنسيق ASCII بسيط: 1.250 أو 0001.250
+                var n=text.match(/(?:^|[^\d])([-+]?\d{1,4}(?:[.,]\d{1,3})?)(?:\s|$)/);
+                if(n){var y=parseFloat(n[1].replace(',','.'));return isFinite(y)&&y>=0&&y<1000?y:null;}
                 return null;
             }
+            async function writeScaleCommand(command){
+                if(!scalePort||!scalePort.writable)return false;
+                if(!scaleWriter)scaleWriter=scalePort.writable.getWriter();
+                await scaleWriter.write(new TextEncoder().encode(command));
+                return true;
+            }
+            function stopScalePolling(){
+                if(scalePollTimer){clearInterval(scalePollTimer);scalePollTimer=null;}
+            }
+            function startScalePolling(){
+                stopScalePolling();
+                if(scaleConfig.protocol!=='8217')return;
+                // 8217 يحتاج طلب W من المضيف، ولا ينبغي إرسال الطلبات أسرع من اللازم.
+                scalePollTimer=setInterval(function(){
+                    writeScaleCommand('W\r').catch(function(e){console.warn('Scale poll:',e);});
+                },300);
+                writeScaleCommand('W\r').catch(function(e){console.warn('Scale initial poll:',e);});
+            }
             async function scaleReadLoop(){
-                if(!scalePort || !scalePort.readable || scaleReadLoopActive) return;
+                if(!scalePort||!scalePort.readable||scaleReadLoopActive)return;
                 scaleReadLoopActive=true;
                 var decoder=new TextDecoder();
                 scaleReader=scalePort.readable.getReader();
@@ -6013,63 +6969,72 @@ function unitOptionsForProduct(p) {
                         var r=await scaleReader.read();
                         if(r.done)break;
                         if(r.value){
-                            scaleBuffer += decoder.decode(r.value,{stream:true});
-                            var parts=scaleBuffer.split(/[\n;]+/);
+                            scaleBuffer+=decoder.decode(r.value,{stream:true});
+                            // نفصل الحزم عند CR/LF/ETX ونحتفظ بأي جزء ناقص.
+                            var parts=scaleBuffer.split(/[\n\r\u0003;]+/);
                             scaleBuffer=parts.pop()||'';
                             parts.forEach(function(part){
                                 var w=parseScaleWeight(part);
-                                if(w!==null) updateScaleWeight(w,'الميزان يرسل الوزن تلقائيًا');
+                                if(w!==null)updateScaleWeight(w,'تم استلام الوزن من الميزان');
                             });
-                            // بعض الموازين ترسل بلا نهاية سطر؛ افحص آخر جزء عند وصول طول مناسب.
+                            // بعض موازين Checkout ترسل إطارًا ثنائيًا خفيفًا أو بلا نهاية سطر.
                             if(scaleBuffer.length>80){
                                 var w2=parseScaleWeight(scaleBuffer);
-                                if(w2!==null) updateScaleWeight(w2,'الميزان يرسل الوزن تلقائيًا');
-                                scaleBuffer=scaleBuffer.slice(-30);
+                                if(w2!==null)updateScaleWeight(w2,'تم استلام الوزن من الميزان');
+                                scaleBuffer=scaleBuffer.slice(-40);
                             }
                         }
                     }
                 }catch(e){
-                    if(scaleReadLoopActive) setScaleStatus(false,'انقطع اتصال الميزان');
+                    if(scaleReadLoopActive){stopScalePolling();setScaleStatus(false,'انقطع اتصال الميزان');}
                     console.warn('Scale read error',e);
                 }finally{
                     try{if(scaleReader)scaleReader.releaseLock();}catch(e){}
-                    scaleReader=null; scaleReadLoopActive=false;
+                    scaleReader=null;scaleReadLoopActive=false;
                 }
             }
             async function disconnectScale(){
+                stopScalePolling();
                 scaleReadLoopActive=false;
                 try{if(scaleReader)await scaleReader.cancel();}catch(e){}
                 try{if(scaleReader)scaleReader.releaseLock();}catch(e){}
                 scaleReader=null;
+                try{if(scaleWriter)scaleWriter.releaseLock();}catch(e){}
+                scaleWriter=null;
                 try{if(scalePort)await scalePort.close();}catch(e){}
                 scalePort=null;
+                scaleBuffer='';
                 setScaleStatus(false,'غير متصل');
                 txt('scaleLiveText','جاهز للوزن');
             }
             async function connectScale(){
-                if(!navigator.serial) throw new Error('المتصفح لا يدعم Web Serial. استخدم Chrome أو Edge على HTTPS أو localhost.');
-                if(scalePort && scalePort.readable){setScaleStatus(true,'متصل');return true;}
+                if(!navigator.serial)throw new Error('المتصفح لا يدعم Web Serial. استخدم Chrome أو Edge على Windows عبر localhost أو HTTPS.');
+                if(scalePort&&scalePort.readable){setScaleStatus(true,'متصل');return true;}
+                saveScaleConfigFromUI();
                 var port=await navigator.serial.requestPort();
-                var baud=9600;
-                try{baud=parseInt(prompt('سرعة الميزان (Baud Rate):\\nالمعتاد 9600، وبعض الموازين تستخدم 2400 أو 4800','9600')||'9600',10)||9600;}catch(e){}
                 try{
-                    await port.open({baudRate:baud,dataBits:8,stopBits:1,parity:'none',flowControl:'none'});
+                    await port.open({baudRate:scaleConfig.baudRate,dataBits:scaleConfig.dataBits,stopBits:scaleConfig.stopBits,parity:scaleConfig.parity,flowControl:'none'});
                 }catch(e){
                     try{await port.close();}catch(x){}
-                    throw new Error('تعذر فتح الميزان بسرعة '+baud+'. جرّب 2400 أو 4800 أو 9600.');
+                    throw new Error('تعذر فتح الميزان بالإعدادات '+scaleConfig.baudRate+'/'+scaleConfig.dataBits+'/'+scaleConfig.parity+'/'+scaleConfig.stopBits+'. راجع إعدادات Checkout في الميزان.');
                 }
-                scalePort=port;
+                scalePort=port;scaleBuffer='';scaleLatestWeightKg=0;
                 setScaleStatus(true,'متصل');
-                txt('scaleLiveText','تم الاتصال — انتظر ثبات الوزن');
+                txt('scaleLiveText',scaleConfig.protocol==='8217'?'متصل — جاري طلب الوزن من ميزان 8217':'متصل — انتظر قراءة الوزن');
                 scaleReadLoop();
+                startScalePolling();
                 return true;
             }
             async function captureScaleWeight(){
                 if(!scalePort){
                     try{await connectScale();}catch(e){toast(e.message||'تعذر توصيل الميزان','error');return 0;}
                 }
+                // ننتظر قليلًا لميزان Checkout حتى تصل أحدث حزمة بعد الاتصال/التثبيت.
+                if(Date.now()-scaleLastWeightAt>1200){
+                    await new Promise(function(resolve){setTimeout(resolve,450);});
+                }
                 var w=num(scaleLatestWeightKg);
-                if(w<=0){toast('لم تصل قراءة صحيحة من الميزان بعد. ضع المنتج وانتظر ثبات الوزن.','warn');return 0;}
+                if(w<=0||Date.now()-scaleLastWeightAt>3000){toast('لم تصل قراءة صحيحة حديثة من الميزان. ضع المنتج وانتظر ثبات الوزن.','warn');return 0;}
                 toast('الوزن الحالي: '+fmtWeight(w)+' كجم','success');
                 return w;
             }
@@ -6241,6 +7206,10 @@ function unitOptionsForProduct(p) {
             var salesChartObj = null,
                 catChartObj = null;
 
+            function updateDashboardWelcome(){
+                var u=getCurrentUser()||{};
+                txt('dashWelcome','مرحباً بك ' + (u.username||u.name||'') + ' في ' + (DB.settings.storeName || 'SmartStore PRO') + ' 👋');
+            }
             function renderDashboard() {
                 var now = Date.now();
                 var todayStart = dayStart(now);
@@ -6258,7 +7227,7 @@ function unitOptionsForProduct(p) {
                 txt('dashInvVal', money(invCost()));
                 txt('dashLow', lowStockItems().length);
                 txt('dashCash', money(availBal()));
-                txt('dashWelcome', 'مرحباً بك في ' + (DB.settings.storeName || 'SmartStore PRO') + ' 👋');
+                updateDashboardWelcome();
                 txt('dashDateLine', new Date().toLocaleDateString('ar-EG', { weekday: 'long', year: 'numeric',
                     month: 'long', day: 'numeric' }));
 
@@ -6710,7 +7679,20 @@ function unitOptionsForProduct(p) {
                 var sub = posCart.reduce(function(s,c){return s + num(c.price) * num(c.qty);},0);
                 var discPct = Math.min(100, Math.max(0, num(val('posDiscount'))));
                 var disc = sub * discPct / 100;
-                return {sub:sub, disc:disc, grand:sub-disc};
+                var grand = sub-disc;
+                var liveGrand=$('#posLiveGrand'), livePaid=$('#posLivePaid'), liveChange=$('#posLiveChange');
+                if(liveGrand) liveGrand.textContent=money(grand);
+                var paid=posPayMethod==='cash' ? num(val('posCashPaid')) : (posPayMethod==='split' ? num(val('posSplitCash'))+num(val('posSplitCard'))+num(val('posSplitCredit')) : (posPayMethod==='card' ? grand : 0));
+                if(livePaid) livePaid.textContent=money(paid);
+                if(liveChange) liveChange.textContent=money(posPayMethod==='cash' ? Math.max(0,paid-grand) : 0);
+                var liveShift=$('#posLiveShift');
+                if(liveShift){ var sh=currentShift&&currentShift(); liveShift.textContent=sh ? ('الوردية: '+(sh.username||sh.employee||'الحالية')) : 'الوردية الحالية'; }
+                return {sub:sub, disc:disc, grand:grand};
+            }
+
+            function updatePosLiveInvoicePreview(){
+                var el=$('#posLiveInvoiceNo'); if(!el)return;
+                try { el.textContent=String((DB.transactions||[]).length+1).padStart(4,'0'); } catch(e){ el.textContent='جديدة'; }
             }
 
             function renderPosCart() {
@@ -6733,10 +7715,11 @@ function unitOptionsForProduct(p) {
                             '<div class="cl-meta">يخصم من المخزون: ' + fmt(c.baseQty) + ' ' + (p ? esc(baseUnitLabel(p.baseUnit)) : 'وحدة') + '</div></div>' +
                             unitSelect +
                             '<div class="qty-ctrl"><button onclick="posChangeQty(\'' + c.productId + '\',1)">+</button><span>' + c.qty + '</span><button onclick="posChangeQty(\'' + c.productId + '\',-1)">−</button></div>' +
-                            '<button class="cl-remove" onclick="posRemove(\'' + c.productId + '\')"><i class="fas fa-trash"></i></button></div>';
-                    }).join('');
+                            '<div class="cl-line-total">' + money(c.price*c.qty) + '</div>' +
+                            '<button class="cl-remove" onclick="posRemove(\'' + c.productId + '\')"><i class="fas fa-trash"></i></button></div>';                    }).join('');
                 var calc = posCalc();
                 txt('posSubtotal', money(calc.sub)); txt('posDiscAmt', money(calc.disc)); txt('posGrand', money(calc.grand));
+                updatePosLiveInvoicePreview();
             }
 
 
@@ -7028,10 +8011,8 @@ function unitOptionsForProduct(p) {
                 if (!fromStr || !toStr) { toast('حدد فترة التقرير أولاً', 'error'); return; }
                 var from = dayStart(fromStr),
                     to = dayEnd(toStr);
-                var sales = DB.transactions.filter(function(t) { return t.type === 'customer' && t.date >= from &&
-                        t.date <= to; });
-                var purchases = DB.transactions.filter(function(t) { return t.type === 'supplier' && t.date >= from &&
-                        t.date <= to; });
+                var sales = DB.transactions.filter(function(t) { return t.type === 'customer' && !t.cancelled && !t.isReturn && num(t.date) >= from && num(t.date) <= to; });
+                var purchases = DB.transactions.filter(function(t) { return t.type === 'supplier' && !t.cancelled && !t.isReturn && num(t.date) >= from && num(t.date) <= to; });
                 var totalSales = sales.reduce(function(s, t) { return s + num(t.total); }, 0);
                 var totalPurchases = purchases.reduce(function(s, t) { return s + num(t.total); }, 0);
                 var totalProfit = sales.reduce(function(s, t) { return s + trxProfit(t); }, 0);
@@ -7419,6 +8400,9 @@ function unitOptionsForProduct(p) {
 
                 if (cb) cb.style.display = change > 0 ? 'block' : 'none';
                 txt('posChange', money(change));
+                txt('posLiveGrand', money(total));
+                txt('posLivePaid', money(paid));
+                txt('posLiveChange', money(change));
             }
 
 
@@ -7498,20 +8482,31 @@ function unitOptionsForProduct(p) {
                 return out;
             }
             function openCashSaleDenominationDialog(total,tendered,change){
-                var modal=$('#cashSaleDenomModal');
-                if(!modal){ toast('نافذة فئات النقد غير متاحة — لم يتم حفظ البيع','error'); return Promise.resolve(null); }
-                if(!modal.dataset.bound) initCashSaleDenomModal();
-                return new Promise(function(resolve){
-                    pendingCashDenomResolver=resolve;
-                    pendingCashDenomData={total:num(total),tendered:num(tendered),change:num(change)};
-                    setVal('cashSaleTotal',money(total)); setVal('cashSaleTendered',money(tendered)); setVal('cashSaleChange',money(change)); setVal('cashSaleNet',money(total));
-                    renderCashSaleDenomInputs();
-                    var rec=suggestDenoms(tendered,null); setDenomCounts('cash-sale-received',rec.counts);
-                    var available=cashboxAvailableAfterReceived(rec.counts); var ch=suggestDenoms(change,available);
-                    if(ch.remaining>0){ setDenomCounts('cash-sale-change',{}); }
-                    else setDenomCounts('cash-sale-change',ch.counts);
-                    var m=$('#cashSaleDenomModal'); if(m){m.classList.add('active');m.setAttribute('aria-hidden','false');}
-                    updateCashSaleDenomTotals();
+                /*
+                 * البيع النقدي يجب ألا يتوقف على نافذة فئات النقد.
+                 * إذا لم توجد فئة مطابقة للباقي (مثل 20 ج) نعتمد البيع فورًا،
+                 * ثم تعيد الخزنة تمثيل رصيدها النهائي دون تغيير إجماليها.
+                 * هذا يمنع بقاء زر إتمام البيع في حالة التحميل انتظارًا لعنصر UI.
+                 */
+                total=num(total); tendered=num(tendered); change=Math.max(0,num(change));
+                if(tendered+0.0001<total) return Promise.resolve(null);
+                var rec=suggestDenoms(tendered,null).counts;
+                var available=cashboxAvailableAfterReceived(rec);
+                var ch=suggestDenoms(change,available);
+                var returned = ch.remaining<=0 ? ch.counts : {};
+                var returnedTotal = sumDenomCounts(returned);
+                var unsettled = Math.max(0,change-returnedTotal);
+                return Promise.resolve({
+                    received:rec,
+                    returned:returned,
+                    ok:true,
+                    total:total,
+                    tendered:tendered,
+                    change:change,
+                    cashReturned:returnedTotal,
+                    unsettledChange:unsettled,
+                    cashNet:total,
+                    autoRebalanced: unsettled>0
                 });
             }
             function closeCashSaleDenomDialog(result){
@@ -7567,13 +8562,18 @@ function unitOptionsForProduct(p) {
                 var changeAmount = 0;
                 var creditName = '';
                 var cardPaid = 0, splitCredit = 0, splitCash = 0;
+                var cashDenomResult = null;
 
                 if (posPayMethod === 'cash') {
                     var paidRaw = val('posCashPaid');
                     cashPaid = paidRaw === '' ? num(calc.grand) : num(paidRaw);
                     if (cashPaid < num(calc.grand)) { toast('المبلغ المدفوع أقل من إجمالي الفاتورة', 'error'); return; }
                     changeAmount = Math.max(0, cashPaid - num(calc.grand));
-                    var cashDenomResult = cashboxAutoSaleDenominations(cashPaid, changeAmount);
+                    cashDenomResult = await openCashSaleDenominationDialog(calc.grand, cashPaid, changeAmount);
+                    if(!cashDenomResult || !cashDenomResult.ok){
+                        toast('تم إلغاء البيع: يجب تسجيل الفئات النقدية الفعلية المستلمة والباقي.','warn');
+                        return;
+                    }
                 } else if (posPayMethod === 'card') {
                     cardPaid = num(calc.grand);
                 } else if (posPayMethod === 'credit') {
@@ -7585,9 +8585,30 @@ function unitOptionsForProduct(p) {
                 } else if (posPayMethod === 'split') {
                     var sv=posSplitValues(); splitCash=sv.cash;cardPaid=sv.card;splitCredit=sv.credit;
                     if(Math.abs(sv.diff)>=0.005){toast('مجموع طرق الدفع يجب أن يساوي '+money(calc.grand),'error');updatePosSplit();return;}
-                    if(splitCash>0){cashPaid=splitCash;cashDenomResult=cashboxAutoSaleDenominations(splitCash,0);}
+                    if(splitCash>0){
+                        cashPaid=splitCash;
+                        cashDenomResult=await openCashSaleDenominationDialog(splitCash,splitCash,0);
+                        if(!cashDenomResult || !cashDenomResult.ok){
+                            toast('تم إلغاء البيع: يجب تسجيل الفئات النقدية الفعلية للجزء النقدي.','warn');
+                            return;
+                        }
+                    }
                     if(splitCredit>0){creditName=val('posSplitCreditName').replace(/\s+/g,' ').trim();if(!creditName){toast('اكتب اسم العميل للجزء الآجل','error');return;}var ex=DB.customers.find(function(c){return String(c.name||'').trim().toLowerCase()===creditName.toLowerCase();});if(ex)custId=ex.id;else{var nc={id:uid(),name:creditName,phone:'',email:'',address:''};DB.customers.push(nc);custId=nc.id;}}
                 }
+                if (cashDenomResult && (posPayMethod === 'cash' || posPayMethod === 'split')) {
+                    var cashSaleValue = posPayMethod === 'cash' ? calc.grand : splitCash;
+                    var cashCheck = cashboxValidateSaleDenominations(
+                        cashDenomResult.received,
+                        cashDenomResult.returned,
+                        cashSaleValue,
+                        {tendered:cashPaid, change:changeAmount, allowUnsettledChange:!!cashDenomResult.autoRebalanced}
+                    );
+                    if(!cashCheck.ok){
+                        toast(cashCheck.message || 'فئات النقد غير متطابقة مع المبلغ الفعلي','error');
+                        return;
+                    }
+                }
+
                 for (var i = 0; i < posCart.length; i++) {
                     var line = posCart[i];
                     var p = DB.products.find(function(x) { return x.id === line.productId; });
@@ -7660,7 +8681,7 @@ function unitOptionsForProduct(p) {
                         cashDenomResult.returned,
                         (posPayMethod === 'cash' ? calc.grand : splitCash),
                         'بيع نقدي POS — فاتورة #' + trxId.slice(-6).toUpperCase(),
-                        {trxId:trxId, tendered:cashPaid, change:changeAmount}
+                        {trxId:trxId, tendered:cashPaid, change:changeAmount, allowUnsettledChange:!!cashDenomResult.autoRebalanced}
                     );
                     if(!saleCashApplied.ok){
                         // تم التحقق قبل تعديل المخزون، لذا هذه الحالة استثنائية فقط.
@@ -7714,12 +8735,30 @@ function unitOptionsForProduct(p) {
                 refreshAll();
                 renderPOS();
                 updatePosPaymentFields();
+                txt('posLiveInvoiceNo', ensureInvoiceNo(trx));
                 toast('تم إتمام البيع بنجاح ✅');
-                var printed = await printReceiptAutomatically(trx.id);
-                if (posPayMethod === 'cash' && DB.settings && DB.settings.cashDrawerAutoOpen !== false) {
-                    await openCashDrawer();
-                }
-                if (!printed) toast('تم حفظ البيع، لكن تعذر الطباعة تلقائيًا', 'warn');
+
+                /* الطباعة وفتح درج الخزنة خدمات لاحقة وليست جزءًا من اعتماد البيع.
+                   لا ننتظرها حتى لا يبقى زر البيع في حالة التحميل بسبب طابعة/Agent غير متاح. */
+                (async function(){
+                    var printed=false;
+                    try {
+                        printed = await Promise.race([
+                            printReceiptAutomatically(trx.id),
+                            new Promise(function(resolve){setTimeout(function(){resolve(false);},6500);})
+                        ]);
+                    } catch(e) { console.warn('Post-sale print:',e); printed=false; }
+                    if (!printed) toast('تم حفظ البيع، لكن تعذر الطباعة تلقائيًا', 'warn');
+
+                    if (posPayMethod === 'cash' && DB.settings && DB.settings.cashDrawerAutoOpen !== false) {
+                        try {
+                            await Promise.race([
+                                openCashDrawer(),
+                                new Promise(function(resolve){setTimeout(function(){resolve(false);},6500);})
+                            ]);
+                        } catch(e) { console.warn('Post-sale cash drawer:',e); }
+                    }
+                })();
             }
 
 
@@ -7729,7 +8768,7 @@ function unitOptionsForProduct(p) {
             function cashboxRender(){
                 var c=ensureCashbox();
                 txt('cashboxTotal',money(cashboxTotal())); txt('cashboxKnown',money(cashboxKnownTotal())); txt('cashboxUnallocated',money(c.unallocated)); txt('cashboxDenomTotal',money(cashboxKnownTotal())); txt('cashboxExpected',money(cashboxTotal()));
-                var box=$('#cashboxDenoms'); if(box) box.innerHTML=CASH_DENOMS.map(function(d){return '<div class="cash-denom"><b>'+d+' ج.م</b><input class="input-field cash-count" data-denom="'+d+'" type="number" min="0" step="0.01" value="'+(c.denominations[String(d)]||0)+'"><small>القيمة: '+money(d*(c.denominations[String(d)]||0))+'</small></div>';}).join('');
+                var box=$('#cashboxDenoms'); if(box) { box.innerHTML=CASH_DENOMS.map(function(d){return '<div class="cash-denom"><b>'+d+' ج.م</b><input class="input-field cash-count" data-denom="'+d+'" type="number" min="0" step="1" value="'+(c.denominations[String(d)]||0)+'"><small>القيمة: '+money(d*(c.denominations[String(d)]||0))+'</small></div>';}).join(''); $$('#cashboxDenoms .cash-count').forEach(function(i){ i.addEventListener('input',function(){ var d=String(i.dataset.denom), q=Math.max(0,Math.floor(num(i.value))); c.denominations[d]=q; save(); txt('cashboxKnown',money(cashboxKnownTotal())); txt('cashboxTotal',money(cashboxTotal())); txt('cashboxExpected',money(cashboxTotal())); var l=$('#cashboxDenomTotal'); if(l) l.textContent=money(cashboxKnownTotal()); }); }); }
                 var mb=$('#cashboxMoveDenoms'); if(mb) { mb.innerHTML=CASH_DENOMS.map(function(d){return '<div class="cash-denom"><b>'+d+' ج.م</b><input class="input-field cash-move-count" data-denom="'+d+'" type="number" min="0" step="1" value="0"><small>الإجمالي: <span class="cash-move-subtotal" data-subtotal="'+d+'">0 ج.م</span></small></div>';}).join(''); $$('#cashboxMoveDenoms .cash-move-count').forEach(function(i){ i.addEventListener('input',function(){ var d=Number(i.dataset.denom||0), q=Math.max(0,Math.floor(num(i.value))); var el=$('#cashboxMoveDenoms [data-subtotal="'+i.dataset.denom+'"]'); if(el) el.textContent=money(d*q); cashboxUpdateMoveDenomTotal(); }); }); }
                 var mt=$('#cashboxMovements'); if(mt){ var arr=(c.movements||[]).slice().sort(function(a,b){return b.date-a.date;}).slice(0,30); mt.innerHTML=arr.length?arr.map(function(m){return '<tr><td>'+fmtDate(m.date)+'</td><td><span class="badge '+(m.type==='in'?'badge-green':'badge-red')+'">'+(m.type==='in'?'إيداع':'سحب')+'</span></td><td><strong>'+money(m.amount)+'</strong></td><td>'+esc(m.note||'حركة نقدية')+'</td></tr>';}).join(''):'<tr class="empty-row"><td colspan="4">لا توجد حركات</td></tr>'; }
             }
@@ -7795,6 +8834,43 @@ function unitOptionsForProduct(p) {
             function closeTreasuryDay(){if(!requireAction('treasury_close','ليس لديك صلاحية إقفال اليوم'))return;ensureTreasuryData();var d=trDate(val('trDate'));if(DB.dailyClosings.some(function(x){return x.date===d;})){toast('هذا اليوم مقفل بالفعل','warning');return;}var rec=DB.treasuryReconciliations.filter(function(x){return x.date===d;}).slice(-1)[0];if(!rec){toast('يجب حفظ تسوية الخزنة أولاً','warning');return;}DB.dailyClosings.push({id:'DC-'+Date.now(),date:d,expected:rec.expected,actual:rec.actual,variance:rec.variance,user:(getCurrentUser()&&getCurrentUser().username)||'admin',closedAt:Date.now(),status:'مقفل'});save();logActivity('إقفال اليوم '+d,'fa-lock','green');renderTreasury();toast('تم إقفال اليوم بنجاح','success');}
             function initTreasury(){ensureTreasuryData();var d=new Date().toISOString().slice(0,10);setVal('trDate',d);var a=$('#trDate');if(a)a.addEventListener('change',renderTreasury);var b=$('#trReconcile');if(b)b.addEventListener('click',reconcileTreasury);var c=$('#trCloseDay');if(c)c.addEventListener('click',closeTreasuryDay);var r=$('#trRefresh');if(r)r.addEventListener('click',renderTreasury);renderTreasury();}
 
+            // ==================== PHYSICAL CASH COUNTER DEVICE BRIDGE ====================
+            var cashDeviceState = {connected:false, deviceId:'', transport:'auto', lastRead:null, total:0, denominations:{}, expected:0};
+            function cashDeviceSetStatus(text, cls, icon){ var el=$('#cashDeviceStatus'); if(el){el.className='cash-device-status '+(cls||''); el.innerHTML='<i class="fas '+(icon||'fa-circle')+'"></i> '+esc(text);} }
+            function cashDeviceHelp(text, type){ var el=$('#cashDeviceHelp'); if(el){el.className='alert-bar '+(type||'info')+' show';el.style.display='flex';el.innerHTML='<i class="fas '+(type==='error'?'fa-circle-exclamation':type==='success'?'fa-circle-check':'fa-circle-info')+'"></i> '+esc(text);} }
+            function cashDeviceExpected(){ var e=cashboxTotal(); txt('cashDeviceExpected',money(e)); return e; }
+            function cashDeviceRender(){
+                cashDeviceExpected(); txt('cashDeviceTotal',money(cashDeviceState.total||0));
+                var variance=num(cashDeviceState.total)-cashboxTotal(); txt('cashDeviceVariance',money(variance));
+                txt('cashDeviceLastRead',cashDeviceState.lastRead?new Date(cashDeviceState.lastRead).toLocaleTimeString('ar-EG'):'—');
+                var sel=$('#cashDeviceTransport'); if(sel) sel.value=cashDeviceState.transport||'auto';
+                cashDeviceSetStatus(cashDeviceState.connected?'متصل':'غير متصل',cashDeviceState.connected?'ok':'',cashDeviceState.connected?'fa-circle-check':'fa-circle');
+            }
+            async function cashDeviceDiscover(){
+                cashDeviceHelp('جاري البحث عن جهاز جرد عبر SmartStore Device Bridge على جهاز الكاشير...','info');
+                try{
+                    var d=await agentFetch('/cash-counter/devices',null,true); var list=Array.isArray(d.devices)?d.devices:[]; var sel=$('#cashDeviceId');
+                    if(sel) sel.innerHTML=list.length?list.map(function(x){return '<option value="'+esc(String(x.id||''))+'">'+esc(x.name||x.id||'جهاز')+'</option>';}).join(''):'<option value="">لم يتم اكتشاف جهاز</option>';
+                    if(list.length){cashDeviceState.deviceId=list[0].id||'';cashDeviceHelp('تم اكتشاف جهاز. اختره ثم اضغط «اتصال».','success');}else{cashDeviceHelp('لم يتم اكتشاف جهاز. هذا طبيعي حاليًا لأن جهاز جرد الخزنة غير موصل أو لا يوجد تعريف/برنامج تشغيل له بعد.','info');}
+                }catch(e){ cashDeviceSetStatus('الجسر غير متاح','warn','fa-link-slash'); cashDeviceHelp('واجهة جهاز جرد الخزنة جاهزة، لكن برنامج تشغيل الجهاز (Device Bridge) غير مثبت/غير متاح حاليًا. لن نعتبر ذلك جهازًا متصلًا.','info'); }
+            }
+            async function cashDeviceConnect(){
+                var id=val('cashDeviceId'), transport=val('cashDeviceTransport'); if(!id){toast('اكتشف الجهاز أولًا','warning');return;}
+                try{ var d=await agentFetch('/cash-counter/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceId:id,transport:transport})},true); cashDeviceState.connected=true;cashDeviceState.deviceId=id;cashDeviceState.transport=transport;cashDeviceHelp(d.message||'تم الاتصال بجهاز جرد الخزنة.','success');cashDeviceRender(); }
+                catch(e){ cashDeviceState.connected=false; cashDeviceRender(); cashDeviceHelp('تعذر الاتصال بجهاز جرد الخزنة. عند توفر الجهاز لاحقًا سيستخدم نفس المسار مع تعريفه الفعلي.','info'); }
+            }
+            async function cashDeviceRead(){
+                if(!cashDeviceState.connected){toast('صل جهاز جرد الخزنة أولًا','warning');return;}
+                try{ var d=await agentFetch('/cash-counter/read',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceId:cashDeviceState.deviceId,mode:val('cashDeviceMode')})},true); cashDeviceState.total=num(d.total);cashDeviceState.denominations=d.denominations||{};cashDeviceState.lastRead=Date.now();cashDeviceHelp('تمت قراءة الجرد من الجهاز. راجع النتيجة قبل اعتمادها.','success');cashDeviceRender(); }
+                catch(e){ cashDeviceHelp('تعذر قراءة الجرد. بروتوكول الجهاز الفعلي سيُحدد بعد معرفة موديل الجهاز وتعريفه.','info'); }
+            }
+            function cashDeviceApply(){
+                if(!cashDeviceState.lastRead){toast('اقرأ الجرد من الجهاز أولًا','warning');return;}
+                var total=num(cashDeviceState.total), expected=cashboxTotal(), variance=total-expected; setVal('cashboxCounted',fmt(total)); txt('cashboxVariance',money(variance));
+                ensureCashbox().lastCount={date:Date.now(),counted:total,expected:expected,variance:variance,source:'physical-cash-counter',deviceId:cashDeviceState.deviceId,transport:cashDeviceState.transport,denominations:cashDeviceState.denominations||{}}; save(); cashboxRender(); cashDeviceRender(); toast('تم اعتماد نتيجة جرد جهاز الخزنة: '+money(total),'success');
+            }
+            function cashDeviceDisconnect(){ cashDeviceState.connected=false; cashDeviceHelp('تم فصل جهاز جرد الخزنة من الواجهة.','info'); cashDeviceRender(); }
+
             function initCashboxPage(){
                 if($('#btnCashboxMove')) $('#btnCashboxMove').onclick=function(){var type=val('cashboxMoveType'), amount=num(val('cashboxMoveAmount')); if(amount<=0){toast('أدخل مبلغًا صحيحًا','error');return;} var ok=type==='in'?cashboxRegisterUnallocated('in',amount,val('cashboxMoveNote')):cashboxRegisterUnallocated('out',amount,val('cashboxMoveNote')); if(!ok){toast('رصيد الخزنة غير كافٍ','error');return;} save(); cashboxRender(); setVal('cashboxMoveAmount','');setVal('cashboxMoveNote','');toast(type==='in'?'تم تسجيل الإيداع كمبلغ غير موزع. إذا كنت تعرف الفئات استخدم «إيداع المبلغ بالفئات».':'تم تسجيل السحب','success');};
                 if($('#btnCashboxDenomIn')) $('#btnCashboxDenomIn').onclick=function(){cashboxDepositFromCounts('in');};
@@ -7803,7 +8879,14 @@ function unitOptionsForProduct(p) {
                 if($('#btnCashboxRefresh')) $('#btnCashboxRefresh').onclick=cashboxRender;
                 if($('#btnOpenCashDrawer')) $('#btnOpenCashDrawer').onclick=function(){openCashDrawer({force:true});};
                 if($('#btnTestCashDrawer')) $('#btnTestCashDrawer').onclick=function(){openCashDrawer({force:true});};
-                cashboxRender();
+                if($('#cashDeviceTransport')) $('#cashDeviceTransport').onchange=function(){cashDeviceState.transport=this.value;};
+                if($('#cashDeviceId')) $('#cashDeviceId').onchange=function(){cashDeviceState.deviceId=this.value;};
+                if($('#btnCashDeviceDiscover')) $('#btnCashDeviceDiscover').onclick=cashDeviceDiscover;
+                if($('#btnCashDeviceConnect')) $('#btnCashDeviceConnect').onclick=cashDeviceConnect;
+                if($('#btnCashDeviceRead')) $('#btnCashDeviceRead').onclick=cashDeviceRead;
+                if($('#btnCashDeviceApply')) $('#btnCashDeviceApply').onclick=cashDeviceApply;
+                if($('#btnCashDeviceDisconnect')) $('#btnCashDeviceDisconnect').onclick=cashDeviceDisconnect;
+                cashboxRender(); cashDeviceRender();
             }
             // expose useful actions
             window.openCashbox=function(){navigate('cashbox');cashboxRender();};
@@ -7820,15 +8903,26 @@ function unitOptionsForProduct(p) {
             var CODE128_PATTERNS=['BaBbBb','BbBaBb','BbBbBa','AbAbBc','AbAcBb','AcAbBb','AbBbAc','AbBcAb','AcBbAb','BbAbAc','BbAcAb','BcAbAb','AaBbCb','AbBaCb','AbBbCa','AaCbBb','AbCaBb','AbCbBa','BbCbAa','BbAaCb','BbAbCa','BaCbAb','BbCaAb','CaBaCa','CaAbBb','CbAaBb','CbAbBa','CaBbAb','CbBaAb','CbBbAa','BaBaBc','BaBcBa','BcBaBa','AaAcBc','AcAaBc','AcAcBa','AaBcAc','AcBaAc','AcBcAa','BaAcAc','BcAaAc','BcAcAa','AaBaCc','AaBcCa','AcBaCa','AaCaBc','AaCcBa','AcCaBa','CaCaBa','BaAcCa','BcAaCa','BaCaAc','BaCcAa','BaCaCa','CaAaBc','CaAcBa','CcAaBa','CaBaAc','CaBcAa','CcBaAa','CaDaAa','BbAdAa','DcAaAa','AaAbBd','AaAdBb','AbAaBd','AbAdBa','AdAaBb','AdAbBa','AaBbAd','AaBdAb','AbBaAd','AbBdAa','AdBaAb','AdBbAa','BdAbAa','BbAaAd','DaCaAa','BdAaAb','AcDaAa','AaAbDb','AbAaDb','AbAbDa','AaDbAb','AbDaAb','AbDbAa','DaAbAb','DbAaAb','DbAbAa','BaBaDa','BaDaBa','DaBaBa','AaAaDc','AaAcDa','AcAaDa','AaDaAc','AaDcAa','DaAaAc','DaAcAa','AaCaDa','AaDaCa','CaAaDa','DaAaCa','BaAdAb','BaAbAd','BaAbCb','BcCaAaB'];
             function code128Svg(value,width,height){
                 value=String(value||'').trim(); if(!value)return '';
-                // Code 128-B supports printable ASCII. For other characters, replace them with a safe visible token.
+                // Code 128-B حقيقي: الحروف الكبيرة تمثل الشرائط، والصغيرة تمثل الفراغات.
+                // الإصدار السابق كان يحسب a/b/c كـ 33/34/35 وحدة، لذلك ظهرت فجوات كبيرة جدًا.
                 var clean=''; for(var i=0;i<value.length;i++){var o=value.charCodeAt(i); clean += (o>=32&&o<=126)?value[i]:'?';}
-                var vals=[104]; for(var j=0;j<clean.length;j++) vals.push(clean.charCodeAt(j)-32);
-                var sum=104; for(var k=1;k<vals.length;k++) sum += vals[k]*k; vals.push(sum%103); vals.push(106);
-                var totalUnits=0; vals.forEach(function(v){var pat=CODE128_PATTERNS[v]||'';for(var q=0;q<pat.length;q++) totalUnits += pat.charCodeAt(q)-64;});
-                width=width||360;height=height||100; var barH=height-18, scale=Math.max(.6,(width-12)/totalUnits), actual=totalUnits*scale, x=(width-actual)/2;
-                var out='<svg xmlns="http://www.w3.org/2000/svg" width="'+width+'" height="'+height+'" viewBox="0 0 '+width+' '+height+'" shape-rendering="crispEdges"><rect width="100%" height="100%" fill="#fff"/>';
-                vals.forEach(function(v){var pat=CODE128_PATTERNS[v]||'';for(var z=0;z<pat.length;z++){var w=(pat.charCodeAt(z)-64)*scale; if(pat[z]>='A'&&pat[z]<='Z') out+='<rect x="'+x.toFixed(2)+'" y="3" width="'+Math.max(.5,w).toFixed(2)+'" height="'+barH+'" fill="#000"/>'; x+=w;}});
-                out+='<text x="'+(width/2)+'" y="'+(height-3)+'" text-anchor="middle" font-family="Arial" font-size="12" fill="#000">'+esc(value)+'</text></svg>'; return out;
+                var vals=[104];
+                for(var j=0;j<clean.length;j++) vals.push(clean.charCodeAt(j)-32);
+                var sum=104; for(var k=1;k<vals.length;k++) sum += vals[k]*k;
+                vals.push(sum%103); vals.push(106);
+                function unit(ch){
+                    var n=ch.charCodeAt(0);
+                    return (ch>='A'&&ch<='D') ? (n-64) : (n-96);
+                }
+                var totalUnits=0;
+                vals.forEach(function(v){var pat=CODE128_PATTERNS[v]||'';for(var q=0;q<pat.length;q++) totalUnits+=unit(pat[q]);});
+                width=width||360; height=height||100;
+                var barH=Math.max(32,height-22), quiet=Math.max(10,Math.round(width*.045));
+                var scale=(width-(quiet*2))/Math.max(1,totalUnits), actual=totalUnits*scale, x=(width-actual)/2;
+                var out='<svg xmlns="http://www.w3.org/2000/svg" width="'+width+'" height="'+height+'" viewBox="0 0 '+width+' '+height+'" shape-rendering="crispEdges" role="img" aria-label="'+esc(value)+'"><rect width="100%" height="100%" fill="#fff"/>';
+                vals.forEach(function(v){var pat=CODE128_PATTERNS[v]||'';for(var z=0;z<pat.length;z++){var w=unit(pat[z])*scale;if(pat[z]>='A'&&pat[z]<='D') out+='<rect x="'+x.toFixed(2)+'" y="3" width="'+Math.max(.8,w).toFixed(2)+'" height="'+barH+'" fill="#000"/>';x+=w;}});
+                out+='<text x="'+(width/2)+'" y="'+(height-3)+'" text-anchor="middle" font-family="Arial,monospace" font-size="12" font-weight="700" fill="#000">'+esc(value)+'</text></svg>';
+                return out;
             }
             function labelBarcodeSvg(code,w,h){var c=String(code||'').trim(); if(!c)return ''; if(/^\d{13}$/.test(c))return ean13Svg(c,w||320,h||90); return code128Svg(c,w||320,h||90);}
             function labelBarcodeKind(code){return /^\d{13}$/.test(String(code||'').trim())?'EAN-13':'Code 128';}
@@ -7913,14 +9007,15 @@ function unitOptionsForProduct(p) {
             var receiptData = null;
 
             function invoiceBarcodeText(t){
-                var typ=t.type==='customer'?'sale':'purchase';
-                return 'SSP|'+typ+'|'+String(ensureInvoiceNo(t)||t.id||'').replace(/[|\s]/g,'');
+                /* باركود الفاتورة يستخدم رقم الفاتورة نفسه كـ Code 128:
+                   أقصر، أوضح، وأسهل في المسح من ترميز SSP|sale|... الطويل. */
+                return String(ensureInvoiceNo(t)||t.id||'').replace(/[|\s]/g,'');
             }
             function invoiceBarcodeMarkup(t){
                 if(!t) return '';
                 var code=invoiceBarcodeText(t);
-                var svg=typeof code128Svg==='function' ? code128Svg(code,300,64) : '';
-                return '<div class="invoice-barcode-box" id="invoiceBarcodeBox" aria-label="باركود الفاتورة">'+svg+'<small>#'+esc(ensureInvoiceNo(t)||'')+'</small></div>';
+                var svg=typeof code128Svg==='function' ? code128Svg(code,250,72) : '';
+                return '<div class="invoice-barcode-box" id="invoiceBarcodeBox" aria-label="باركود الفاتورة">'+svg+'<small>'+esc(ensureInvoiceNo(t)||'')+'</small></div>';
             }
             function loadInvoiceBarcode(t){ return Promise.resolve(!!t); }
             function closeReturnQRScanner(){ var m=$('#returnQRScannerModal'); if(m){m.classList.remove('active');m.setAttribute('aria-hidden','true');} }
@@ -7998,7 +9093,11 @@ function unitOptionsForProduct(p) {
                 };
                 var tag = tagMap[receiptData.kind] || ['sale', 'مستند'];
                 h += '<span class="r-type-tag ' + tag[0] + '">' + tag[1] + '</span></div>';
-                h += '<div class="r-section"><div class="r-sec-title">📋 البيانات</div>' +
+                h += '<div class="r-section r-till-head">' +
+                    '<div class="r-till-meta"><div><span>رقم الحركة</span><strong>' + esc(receiptData.invNo || '—') + '</strong></div>' +
+                    '<div><span>الكاشير</span><strong>' + esc(receiptData.cashierName || '—') + '</strong></div>' +
+                    '<div><span>التاريخ</span><strong>' + esc(receiptData.date || '—') + '</strong></div></div>' +
+                    '<div class="r-sec-title">📋 بيانات العميل</div>' +
                     '<div class="r-row"><span class="lbl">الاسم:</span><span class="val">' + esc(receiptData.name) +
                     '</span></div>';
                 if (receiptData.phone) h += '<div class="r-row"><span class="lbl">📞 الهاتف:</span><span class="val">' +
@@ -8090,41 +9189,125 @@ function unitOptionsForProduct(p) {
             }
 
             // ==================== BARCODE SCANNER (CAMERA) ====================
+            // ماسح الكاميرا: لا نعتمد على قراءة واحدة حتى لا يتم التقاط نص/باركود مجاور بالخطأ.
             var scanning = false;
+            var scannerCandidate = { code: '', count: 0, firstAt: 0, lastAt: 0 };
+            var scannerDetectedHandler = null;
+
+            function normalizeScannedBarcode(raw) {
+                return String(raw == null ? '' : raw)
+                    .replace(/[\u0000-\u001F\u007F]/g, '')
+                    .trim();
+            }
+
+            function isValidBarcodeValue(code) {
+                code = normalizeScannedBarcode(code);
+                if (!code || code.length < 3 || code.length > 64) return false;
+                // أرقام EAN/UPC يجب أن تجتاز رقم التحقق حتى لا نقبل قراءة رقمية عشوائية.
+                if (/^\d+$/.test(code)) {
+                    if (code.length === 8 || code.length === 12 || code.length === 13 || code.length === 14) {
+                        var body = code.slice(0, -1), check = Number(code.slice(-1)), sum = 0, pos = 0;
+                        for (var i = body.length - 1; i >= 0; i--, pos++) {
+                            var d = Number(body[i]);
+                            sum += d * (pos % 2 === 0 ? 3 : 1);
+                        }
+                        return ((10 - (sum % 10)) % 10) === check;
+                    }
+                }
+                return /^[\x20-\x7E]+$/.test(code);
+            }
+
+            function resetScannerCandidate() {
+                scannerCandidate = { code: '', count: 0, firstAt: 0, lastAt: 0 };
+            }
+
+            function acceptCameraBarcode(code) {
+                code = normalizeScannedBarcode(code);
+                if (!isValidBarcodeValue(code)) return false;
+                setVal('prodBarcode', code);
+                handleBarcodeScan(code);
+                toast('تم التقاط الباركود: ' + code, 'success');
+                stopScan();
+                return true;
+            }
 
             function stopScan() {
-                if (scanning) { try { if (typeof Quagga !== 'undefined') Quagga.stop(); } catch (e) {} scanning =
-                    false; }
-                $('#cameraSection').style.display = 'none';
+                if (typeof Quagga !== 'undefined') {
+                    try { if (Quagga.offDetected && scannerDetectedHandler) Quagga.offDetected(scannerDetectedHandler); } catch (e) {}
+                    try { if (scanning) Quagga.stop(); } catch (e) {}
+                }
+                scanning = false;
+                scannerDetectedHandler = null;
+                resetScannerCandidate();
+                var section = $('#cameraSection');
+                if (section) section.style.display = 'none';
+                updateScannerStatus(false);
             }
 
             function startScan() {
-                $('#cameraSection').style.display = 'block';
-                if (scanning) { try { Quagga.stop(); } catch (e) {} }
+                var section = $('#cameraSection');
+                var viewport = $('#scanner-viewport');
+                if (section) section.style.display = 'block';
+                resetScannerCandidate();
                 if (typeof Quagga === 'undefined') { toast('مكتبة المسح غير متوفرة', 'error'); return; }
-                Quagga.init({
-                    inputStream: { name: "Live", type: "LiveStream", target: $('#scanner-viewport'),
-                        constraints: { facingMode: "environment" } },
-                    decoder: { readers: ["code_128_reader", "ean_reader", "code_39_reader", "upc_reader"] }
-                }, function(err) {
-                    if (err) { toast('تعذر الوصول للكاميرا', 'error'); return; }
-                    scanning = true;
-                    Quagga.start();
-                    updateScannerStatus(true);
-                });
-                Quagga.onDetected(function(r) {
-                    if (r && r.codeResult && r.codeResult.code) {
-                        var code = r.codeResult.code;
-                        setVal('prodBarcode', code);
-                        handleBarcodeScan(code);
-                        toast('تم المسح: ' + code);
-                        stopScan();
-                        window.addEventListener('pagehide', function(){ try{lanSaveLocalOnly();}catch(e){} });
-            document.addEventListener('visibilitychange', function(){ if(document.visibilityState==='visible' && LAN_ENABLED && !LAN_READY) lanConnectWS(); });
+                try { if (Quagga.offDetected && scannerDetectedHandler) Quagga.offDetected(scannerDetectedHandler); } catch (e) {}
+                if (scanning) { try { Quagga.stop(); } catch (e) {} scanning = false; }
 
-            updateScannerStatus(false);
+                var workers = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+                Quagga.init({
+                    inputStream: {
+                        name: "Live", type: "LiveStream", target: viewport,
+                        constraints: {
+                            facingMode: { ideal: "environment" },
+                            width: { ideal: 1280, min: 640 },
+                            height: { ideal: 720, min: 480 },
+                            aspectRatio: { ideal: 1.777 }
+                        },
+                        area: { top: "18%", right: "5%", left: "5%", bottom: "18%" }
+                    },
+                    locate: true,
+                    locator: { patchSize: "medium", halfSample: true },
+                    frequency: 10,
+                    numOfWorkers: workers,
+                    decoder: {
+                        multiple: false,
+                        readers: ["ean_reader", "ean_8_reader", "upc_reader", "code_128_reader", "code_39_reader"]
                     }
+                }, function(err) {
+                    if (err) {
+                        scanning = false;
+                        if (section) section.style.display = 'none';
+                        toast('تعذر الوصول للكاميرا: تأكد من السماح للمتصفح باستخدام الكاميرا', 'error');
+                        return;
+                    }
+                    scanning = true;
+                    updateScannerStatus(true);
+                    Quagga.start();
                 });
+
+                scannerDetectedHandler = function(r) {
+                    if (!scanning || !r || !r.codeResult || !r.codeResult.code) return;
+                    var code = normalizeScannedBarcode(r.codeResult.code);
+                    if (!isValidBarcodeValue(code)) return;
+
+                    var now = Date.now();
+                    // نفس الكود يجب أن يظهر مرتين متتاليتين خلال 1.2 ثانية قبل اعتماده.
+                    // هذا يمنع قبول قراءة خاطئة من نص قريب أو باركود مجاور.
+                    if (scannerCandidate.code === code && now - scannerCandidate.lastAt <= 1200) {
+                        scannerCandidate.count++;
+                        scannerCandidate.lastAt = now;
+                    } else {
+                        scannerCandidate = { code: code, count: 1, firstAt: now, lastAt: now };
+                    }
+
+                    if (scannerCandidate.count >= 2 && now - scannerCandidate.firstAt <= 1500) {
+                        acceptCameraBarcode(code);
+                    }
+                };
+                try { Quagga.onDetected(scannerDetectedHandler); } catch (e) {
+                    toast('تعذر تشغيل حساس قراءة الباركود', 'error');
+                    stopScan();
+                }
             }
 
             // ==================== V26+ ADVANCED INVENTORY ====================
@@ -8366,56 +9549,164 @@ function unitOptionsForProduct(p) {
                     return fmtDate(e.date)+' — '+label+' — '+e.qty+' — '+(e.note||'');
                 }).join('\n'):'لا توجد حركة مسجلة'));
             };
+            function trackingTransactionHistory(pid, token, mode){
+                /* Fallback check: older transactions may exist even if trackingEvents was not created. */
+                return Array.isArray(DB.transactions) && DB.transactions.some(function(t){
+                    if(!t || t.cancelled || t.type!=='customer') return false;
+                    return Array.isArray(t.items) && t.items.some(function(it){
+                        if(it.productId!==pid) return false;
+                        var alloc=Array.isArray(it.trackingAllocations)?it.trackingAllocations:[];
+                        if(mode==='batch') return alloc.some(function(a){return a && a.batchNo===token && num(a.qty)>0;});
+                        return alloc.some(function(a){return a && a.serial===token;});
+                    });
+                });
+            }
+            function trackingWasSold(pid, token, mode){
+                return trackingHasSaleHistory(pid,token,mode) || trackingTransactionHistory(pid,token,mode);
+            }
+            function renameTrackingReferences(pid, oldToken, newToken, mode){
+                if(!Array.isArray(DB.trackingEvents)) return;
+                DB.trackingEvents.forEach(function(e){
+                    if(!e || e.productId!==pid) return;
+                    if(mode==='batch'){
+                        if(e.batchNo===oldToken) e.batchNo=newToken;
+                        if(Array.isArray(e.allocations)) e.allocations.forEach(function(a){
+                            if(a && a.batchNo===oldToken) a.batchNo=newToken;
+                        });
+                    }else{
+                        if(Array.isArray(e.serials)) e.serials=e.serials.map(function(sn){return sn===oldToken?newToken:sn;});
+                        if(Array.isArray(e.allocations)) e.allocations.forEach(function(a){
+                            if(a && a.serial===oldToken) a.serial=newToken;
+                        });
+                    }
+                });
+            }
             window.editTracking=function(pid,no,mode){
                 if(!requireAction('stock_adjust','ليس لديك صلاحية تعديل مخزون التتبع'))return;
                 var p=DB.products.find(function(x){return x.id===pid;});if(!p)return;normalizeProductUnits(p);
+
                 if(mode==='batch'){
                     var b=p.batches.find(function(x){return x.batchNo===no;});if(!b){toast('التشغيلة غير موجودة','error');return;}
-                    var newNo=prompt('رقم التشغيلة:',b.batchNo);if(newNo===null)return;newNo=String(newNo).trim();
+                    var soldBefore=trackingWasSold(pid,no,'batch');
+
+                    var newNo=prompt('رقم التشغيلة:',b.batchNo);
+                    if(newNo===null)return;
+                    newNo=String(newNo).trim();
                     if(!newNo){toast('رقم التشغيلة مطلوب','error');return;}
-                    if(p.batches.some(function(x){return x!==b&&x.batchNo===newNo;})){toast('رقم التشغيلة مستخدم داخل هذا المنتج','error');return;}
-                    var newQtyRaw=prompt('الكمية المتاحة الحالية:',String(num(b.qty)));if(newQtyRaw===null)return;var newQty=num(newQtyRaw);if(newQty<0){toast('الكمية غير صحيحة','error');return;}
-                    var newExp=prompt('تاريخ الصلاحية (YYYY-MM-DD) أو اتركه فارغًا:',b.expiry||'');if(newExp===null)return;
-                    var newNote=prompt('ملاحظة:',b.note||'');if(newNote===null)return;
-                    var before=num(b.qty),oldNo=b.batchNo;b.batchNo=newNo;b.qty=newQty;b.expiry=String(newExp).trim();b.note=String(newNote).trim();b.updatedAt=Date.now();
-                    var delta=newQty-before;if(Math.abs(delta)>1e-9){var pb=num(p.quantity);p.quantity=Math.max(0,pb+delta);logMovement(p.id,'adjust',delta,pb,p.quantity,'تعديل كمية التشغيلة '+newNo);}
-                    DB.trackingEvents.unshift({id:uid(),date:Date.now(),productId:p.id,type:'edit',qty:delta,batchNo:newNo,note:'تعديل التشغيلة '+oldNo+' ← '+newNo});
-                }else{
-                    var x=p.serials.find(function(z){return z.serial===no;});if(!x){toast('الرقم التسلسلي غير موجود','error');return;}
-                    var newSerial=no;
-                    if(x.status==='available'){
-                        newSerial=prompt('الرقم التسلسلي:',x.serial);if(newSerial===null)return;newSerial=String(newSerial).trim();
-                        if(!newSerial){toast('الرقم التسلسلي مطلوب','error');return;}
-                        if(p.serials.some(function(z){return z!==x&&z.serial===newSerial;})){toast('الرقم التسلسلي مستخدم بالفعل','error');return;}
-                    }else{
-                        toast('الرقم التسلسلي المباع لا يمكن تغيير رقمه لأنه مرتبط بالفاتورة. يمكنك تعديل الصلاحية والملاحظة فقط.','info');
+                    if(newNo!==b.batchNo && soldBefore){
+                        toast('لا يمكن تغيير رقم تشغيلة استُخدمت في بيع أو مرتجع، حتى لا ينقطع ارتباطها بالفواتير وسجل التدقيق. عدّل الكمية أو الصلاحية أو الملاحظة فقط.','warn');
+                        return;
                     }
-                    var newExp=prompt('تاريخ الصلاحية (YYYY-MM-DD) أو اتركه فارغًا:',x.expiry||'');if(newExp===null)return;
-                    var newNote=prompt('ملاحظة:',x.note||'');if(newNote===null)return;
-                    x.serial=newSerial;x.expiry=String(newExp).trim();x.note=String(newNote).trim();x.updatedAt=Date.now();
-                    DB.trackingEvents.unshift({id:uid(),date:Date.now(),productId:p.id,type:'edit',qty:1,serials:[newSerial],note:'تعديل الرقم التسلسلي'});
+                    if(p.batches.some(function(x){return x!==b&&x.batchNo===newNo;})){
+                        toast('رقم التشغيلة مستخدم داخل هذا المنتج','error');return;
+                    }
+
+                    var newQtyRaw=prompt('الكمية المتاحة الحالية:',String(num(b.qty)));
+                    if(newQtyRaw===null)return;
+                    var newQty=num(newQtyRaw);
+                    if(newQty<0){toast('الكمية غير صحيحة','error');return;}
+
+                    var newExp=prompt('تاريخ الصلاحية (YYYY-MM-DD) أو اتركه فارغًا:',b.expiry||'');
+                    if(newExp===null)return;
+                    var newNote=prompt('ملاحظة:',b.note||'');
+                    if(newNote===null)return;
+
+                    var before=num(b.qty),oldNo=b.batchNo;
+                    b.batchNo=newNo;
+                    b.qty=newQty;
+                    b.expiry=String(newExp).trim();
+                    b.note=String(newNote).trim();
+                    b.updatedAt=Date.now();
+
+                    if(newNo!==oldNo) renameTrackingReferences(pid,oldNo,newNo,'batch');
+
+                    var delta=newQty-before;
+                    if(Math.abs(delta)>1e-9){
+                        var pb=num(p.quantity);
+                        p.quantity=Math.max(0,pb+delta);
+                        logMovement(p.id,'adjust',delta,pb,p.quantity,'تعديل كمية التشغيلة '+newNo);
+                    }
+                    DB.trackingEvents.unshift({
+                        id:uid(),date:Date.now(),productId:p.id,type:'edit',qty:delta,
+                        batchNo:newNo,note:'تعديل التشغيلة '+oldNo+' ← '+newNo
+                    });
+                }else{
+                    var x=p.serials.find(function(z){return z.serial===no;});
+                    if(!x){toast('الرقم التسلسلي غير موجود','error');return;}
+
+                    var soldBefore=x.status!=='available' || trackingWasSold(pid,no,'serial');
+                    var newSerial=no;
+
+                    if(!soldBefore){
+                        newSerial=prompt('الرقم التسلسلي:',x.serial);
+                        if(newSerial===null)return;
+                        newSerial=String(newSerial).trim();
+                        if(!newSerial){toast('الرقم التسلسلي مطلوب','error');return;}
+                        if(p.serials.some(function(z){return z!==x&&z.serial===newSerial;})){
+                            toast('الرقم التسلسلي مستخدم بالفعل','error');return;
+                        }
+                    }else{
+                        toast('الرقم التسلسلي المستخدم في بيع لا يمكن تغيير رقمه لأنه مرتبط بالفاتورة. يمكنك تعديل الصلاحية والملاحظة فقط.','info');
+                    }
+
+                    var newExp=prompt('تاريخ الصلاحية (YYYY-MM-DD) أو اتركه فارغًا:',x.expiry||'');
+                    if(newExp===null)return;
+                    var newNote=prompt('ملاحظة:',x.note||'');
+                    if(newNote===null)return;
+
+                    var oldSerial=x.serial;
+                    x.serial=newSerial;
+                    x.expiry=String(newExp).trim();
+                    x.note=String(newNote).trim();
+                    x.updatedAt=Date.now();
+
+                    if(newSerial!==oldSerial) renameTrackingReferences(pid,oldSerial,newSerial,'serial');
+
+                    DB.trackingEvents.unshift({
+                        id:uid(),date:Date.now(),productId:p.id,type:'edit',qty:1,
+                        serials:[newSerial],note:'تعديل الرقم التسلسلي '+oldSerial+' ← '+newSerial
+                    });
                 }
                 save();refreshAll();renderTracking();toast('تم حفظ تعديل التتبع بنجاح','success');
             };
+
             window.deleteTracking=function(pid,no,mode){
                 if(!requireAction('stock_adjust','ليس لديك صلاحية حذف التتبع'))return;
                 var p=DB.products.find(function(x){return x.id===pid;});if(!p)return;normalizeProductUnits(p);
                 if(!confirm('حذف سجل التتبع «'+no+'»؟\nسيتم تعديل رصيد المخزون المتاح إذا كانت هناك كمية متاحة.'))return;
+
                 if(mode==='batch'){
-                    var b=p.batches.find(function(x){return x.batchNo===no;});if(!b){toast('التشغيلة غير موجودة','error');return;}
-                    if(trackingHasSaleHistory(pid,no,'batch')){toast('لا يمكن حذف تشغيلة استُخدمت في بيع أو مرتجع. احتفظ بها لسجل التدقيق وربط المرتجعات.','warn');return;}
-                    var q=num(b.qty),before=num(p.quantity);p.quantity=Math.max(0,before-q);p.batches=p.batches.filter(function(x){return x!==b;});
+                    var b=p.batches.find(function(x){return x.batchNo===no;});
+                    if(!b){toast('التشغيلة غير موجودة','error');return;}
+                    if(trackingWasSold(pid,no,'batch')){
+                        toast('لا يمكن حذف تشغيلة استُخدمت في بيع أو مرتجع. احتفظ بها لسجل التدقيق وربط الفواتير والمرتجعات.','warn');return;
+                    }
+                    var q=num(b.qty),before=num(p.quantity);
+                    p.quantity=Math.max(0,before-q);
+                    p.batches=p.batches.filter(function(x){return x!==b;});
                     if(q)logMovement(p.id,'adjust',-q,before,p.quantity,'حذف التشغيلة '+no);
-                    DB.trackingEvents.unshift({id:uid(),date:Date.now(),productId:p.id,type:'delete',qty:q,batchNo:no,note:'حذف تشغيلة'});
+                    DB.trackingEvents.unshift({
+                        id:uid(),date:Date.now(),productId:p.id,type:'delete',qty:q,
+                        batchNo:no,note:'حذف تشغيلة'
+                    });
                 }else{
-                    var x=p.serials.find(function(z){return z.serial===no;});if(!x){toast('الرقم التسلسلي غير موجود','error');return;}
-                    if(x.status!=='available' || trackingHasSaleHistory(pid,no,'serial')){toast('لا يمكن حذف رقم تسلسلي استُخدم أو بيع. يمكنك تعديله بدلًا من حذفه.','warn');return;}
-                    p.serials=p.serials.filter(function(z){return z!==x;});p.quantity=Math.max(0,num(p.quantity)-1);
-                    logMovement(p.id,'adjust',-1,num(p.quantity)+1,p.quantity,'حذف الرقم التسلسلي '+no);
-                    DB.trackingEvents.unshift({id:uid(),date:Date.now(),productId:p.id,type:'delete',qty:1,serials:[no],note:'حذف رقم تسلسلي'});
+                    var x=p.serials.find(function(z){return z.serial===no;});
+                    if(!x){toast('الرقم التسلسلي غير موجود','error');return;}
+                    if(x.status!=='available' || trackingWasSold(pid,no,'serial')){
+                        toast('لا يمكن حذف رقم تسلسلي استُخدم أو بيع. يمكنك تعديل الصلاحية والملاحظة بدلًا من حذفه.','warn');return;
+                    }
+                    var beforeSerial=num(p.quantity);
+                    p.serials=p.serials.filter(function(z){return z!==x;});
+                    p.quantity=Math.max(0,beforeSerial-1);
+                    logMovement(p.id,'adjust',-1,beforeSerial,p.quantity,'حذف الرقم التسلسلي '+no);
+                    DB.trackingEvents.unshift({
+                        id:uid(),date:Date.now(),productId:p.id,type:'delete',qty:1,
+                        serials:[no],note:'حذف رقم تسلسلي'
+                    });
                 }
                 save();refreshAll();renderTracking();toast('تم حذف التتبع بنجاح','success');
             };
+
             function addTrackingEntry(){
                 if(!requireAction('stock_adjust','ليس لديك صلاحية تعديل مخزون التتبع'))return;if(!canAccess('tracking')){toast('ليس لديك صلاحية','error');return;}
                 var p=DB.products.find(function(x){return x.id===val('trkProduct');});if(!p){toast('اختر منتجًا','error');return;}normalizeProductUnits(p);
@@ -8443,7 +9734,7 @@ function unitOptionsForProduct(p) {
             }
 
             function updateTrackingModeUI(){var m=val('trkMode'),serial=m==='serial';if($('#trkSerialsField'))$('#trkSerialsField').style.display=serial?'block':'none';if($('#trkBatchNoField'))$('#trkBatchNoField').style.display='block';if($('#trkExpiryField'))$('#trkExpiryField').style.display='block';if($('#trkQtyField'))$('#trkQtyField').style.display=serial?'block':'block';}
-            function initTracking(){if(!$('#page-tracking'))return;if($('#btnAddTracking'))$('#btnAddTracking').onclick=addTrackingEntry;if($('#trkMode'))$('#trkMode').onchange=updateTrackingModeUI;if($('#trkSearch'))$('#trkSearch').oninput=renderTracking;updateTrackingModeUI();renderTracking();}
+            function initTracking(){if(!$('#page-tracking'))return;if($('#btnAddTracking'))$('#btnAddTracking').onclick=addTrackingEntry;if($('#trkMode'))$('#trkMode').onchange=updateTrackingModeUI;if($('#trkSearch'))$('#trkSearch').oninput=renderTracking;if($('#trkProductSearch'))$('#trkProductSearch').oninput=renderTracking;updateTrackingModeUI();renderTracking();}
 
             // ==================== REFRESH ALL ====================
             function refreshAll() {
@@ -8500,7 +9791,7 @@ function unitOptionsForProduct(p) {
             }
 
             // ==================== THERMAL PRINTER / PRINT AGENT ====================
-            var PRINT_AGENT_URL = 'http://127.0.0.1:17891';
+            var PRINT_AGENT_URL = (location.protocol === 'http:' || location.protocol === 'https:') ? (location.origin + '/api/print-agent') : 'http://127.0.0.1:17891';
             var PRINT_AGENT_TIMEOUT = 5000;
             var thermalAgentConnected = false;
             var thermalPrinterName = '';
@@ -8933,6 +10224,9 @@ function unitOptionsForProduct(p) {
                 printHtml += '<style>\n';
                 printHtml += 'body{font-family:"Cairo","Segoe UI",sans-serif;padding:20px;color:#334155;font-size:14px;direction:rtl;background:#fff;}\n';
                 printHtml += '.receipt-doc{max-width:400px;margin:0 auto;}\n';
+                printHtml += '.invoice-barcode-box{display:flex;flex-direction:column;align-items:center;gap:3px;margin:14px auto 4px;padding:8px 4px 4px;border:0;border-top:1px dashed #cbd5e1;background:#fff;max-width:270px;width:100%;text-align:center;break-inside:avoid;page-break-inside:avoid;}\n';
+                printHtml += '.invoice-barcode-box svg{width:250px;height:72px;max-width:100%;display:block;shape-rendering:crispEdges;}\n';
+                printHtml += '.invoice-barcode-box small{font-size:11px;color:#111827;line-height:1.2;font-family:monospace;font-weight:800;letter-spacing:.5px;}\n';
                 printHtml += '.r-header{text-align:center;border-bottom:2px dashed #cbd5e1;padding-bottom:12px;margin-bottom:12px;}\n';
                 printHtml += '.r-header h3{font-size:1.4rem;color:#0f172a;}\n';
                 printHtml += '.r-type-tag{display:inline-block;padding:4px 14px;border-radius:14px;font-size:0.8rem;font-weight:700;margin:6px 0;}\n';
@@ -9156,8 +10450,8 @@ function unitOptionsForProduct(p) {
                 ['prodCartonConfigField','prodCartonsFields','prodBoxesPerCartonField','prodPriceCartonField'].forEach(function(id){
                     var el = $('#' + id); if (el) el.style.display = carton ? 'block' : 'none';
                 });
-                ['prodBoxConfigField','prodPiecesPerBoxField','prodBoxesFields','prodPriceBoxField'].forEach(function(id){
-                    var el = $('#' + id); if (el) el.style.display = box ? 'block' : 'none';
+                ['prodBoxConfigField','prodPiecesPerBoxField','prodBoxesFields','prodPriceBoxField','prodLooseFields'].forEach(function(id){
+                    var el = $('#' + id); if (el) el.style.display = (box || carton) ? 'block' : 'none';
                 });
                 var direct = $('#prodUnitsPerCartonField');
                 if (direct) direct.style.display = mode === 'carton' ? 'block' : 'none';
@@ -9551,39 +10845,185 @@ function unitOptionsForProduct(p) {
                 $('#barcodeImgInput').addEventListener('change', function(e) {
                     var file = e.target.files[0];
                     if (!file) return;
+                    var input = this;
                     var reader = new FileReader();
                     reader.onload = function(ev) {
                         var img = new Image();
-                        img.src = ev.target.result;
-                        img.onload = function() {
-                            var c = document.createElement('canvas');
-                            c.width = img.width;
-                            c.height = img.height;
-                            var ctx = c.getContext('2d');
-                            ctx.drawImage(img, 0, 0);
-                            if (typeof Quagga !== 'undefined') {
-                                Quagga.decodeSingle({
-                                    src: c.toDataURL(),
-                                    numOfWorkers: 0,
-                                    decoder: { readers: ["code_128_reader",
-                                            "ean_reader", "code_39_reader",
-                                            "upc_reader"
-                                        ] }
-                                }, function(r) {
-                                    if (r && r.codeResult && r.codeResult
-                                        .code) {
-                                        var code = r.codeResult.code;
-                                        setVal('prodBarcode', code);
-                                        handleBarcodeScan(code);
-                                        toast('تم القراءة: ' + code);
-                                    } else toast('لم يتم العثور على باركود',
-                                        'error');
-                                });
-                            } else toast('مكتبة المسح غير متوفرة', 'error');
+                        img.onload = async function() {
+                            /*
+                             * قراءة الباركود من صورة:
+                             * المشكلة القديمة كانت أن Quagga كان يفحص الصورة كاملة بكل القراءات،
+                             * فيمكن أن يعتبر أرقام جدول التغذية/النصوص باركودًا صالحًا.
+                             * الأولوية الآن لـ BarcodeDetector الأصلي عندما يكون متاحًا،
+                             * ثم Quagga كحل احتياطي، مع إعطاء أولوية صريحة لـ EAN/UPC.
+                             */
+                            var maxSide = 2200;
+                            var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
+                            var ratio = Math.min(1, maxSide / Math.max(iw, ih));
+                            var base = document.createElement('canvas');
+                            base.width = Math.max(1, Math.round(iw * ratio));
+                            base.height = Math.max(1, Math.round(ih * ratio));
+                            var bctx = base.getContext('2d', {willReadFrequently:true});
+                            bctx.imageSmoothingEnabled = true;
+                            bctx.drawImage(img, 0, 0, base.width, base.height);
+
+                            function rotateCanvas(source, deg) {
+                                if (!deg) return source;
+                                var c = document.createElement('canvas');
+                                var swap = deg === 90 || deg === 270;
+                                c.width = swap ? source.height : source.width;
+                                c.height = swap ? source.width : source.height;
+                                var ctx = c.getContext('2d', {willReadFrequently:true});
+                                ctx.translate(c.width/2, c.height/2);
+                                ctx.rotate(deg*Math.PI/180);
+                                ctx.drawImage(source, -source.width/2, -source.height/2);
+                                return c;
+                            }
+
+                            function canvasVariant(source, mode) {
+                                var c=document.createElement('canvas'); c.width=source.width; c.height=source.height;
+                                var ctx=c.getContext('2d',{willReadFrequently:true}); ctx.drawImage(source,0,0);
+                                if(!mode) return c;
+                                var data=ctx.getImageData(0,0,c.width,c.height), d=data.data;
+                                for(var i=0;i<d.length;i+=4){
+                                    var y=.299*d[i]+.587*d[i+1]+.114*d[i+2];
+                                    if(mode==='gray'){d[i]=d[i+1]=d[i+2]=y;}
+                                    else if(mode==='contrast'){y=Math.max(0,Math.min(255,(y-128)*2.1+128));d[i]=d[i+1]=d[i+2]=y;}
+                                    else if(mode==='threshold'){y=y>145?255:0;d[i]=d[i+1]=d[i+2]=y;}
+                                }
+                                ctx.putImageData(data,0,0); return c;
+                            }
+
+                            function addCandidate(map, raw, meta) {
+                                var code=normalizeScannedBarcode(raw);
+                                if(!isValidBarcodeValue(code)) return;
+                                var digits=/^\d+$/.test(code);
+                                var retail=(code.length===8||code.length===12||code.length===13||code.length===14);
+                                var fmt=String((meta&&meta.format)||'').toLowerCase();
+                                var isRetailFmt=/ean|upc/.test(fmt) || (retail && digits);
+                                var x=map[code]||(map[code]={code:code,hits:0,nativeHits:0,retailHits:0,area:0,formats:{},sources:{}});
+                                var source=String((meta&&meta.source)||'unknown');
+                                if(!x.sources[source]){x.sources[source]=true;x.hits++;}
+                                if(meta&&meta.native)x.nativeHits++;
+                                if(isRetailFmt)x.retailHits++;
+                                if(meta&&meta.area)x.area=Math.max(x.area,meta.area);
+                                if(fmt)x.formats[fmt]=true;
+                            }
+
+                            function commit(code, message) {
+                                if(!code) return false;
+                                code=normalizeScannedBarcode(code);
+                                if(!isValidBarcodeValue(code)) return false;
+                                setVal('prodBarcode',code);
+                                var prodBarcode=$('#prodBarcode');
+                                if(prodBarcode && document.getElementById('page-products') && document.getElementById('page-products').classList.contains('active')){
+                                    prodBarcode.value=code;
+                                    prodBarcode.dispatchEvent(new Event('input',{bubbles:true}));
+                                } else {
+                                    handleBarcodeScan(code);
+                                }
+                                toast(message||('تم التقاط الباركود: '+code),'success');
+                                return true;
+                            }
+
+                            var candidates=Object.create(null);
+                            var orientations=[0,90,180,270];
+                            var orientationCanvases=[];
+                            orientations.forEach(function(deg){
+                                var c=rotateCanvas(base,deg);
+                                orientationCanvases.push(c);
+                                addCandidate; // keep helper referenced for minifiers/older engines
+                            });
+
+                            /* 1) المسار الأقوى: BarcodeDetector الأصلي.
+                             * نطلب فقط أنواع التجزئة التجارية المعروفة بدل ترك المتصفح يبحث في كل الأنواع.
+                             * هذا يقلل بشدة من تحويل أرقام النصوص إلى باركود وهمي. */
+                            var nativeFound=false;
+                            try {
+                                if(typeof BarcodeDetector!=='undefined' && BarcodeDetector.getSupportedFormats){
+                                    var supported=await BarcodeDetector.getSupportedFormats();
+                                    var wanted=['ean_13','ean_8','upc_a','upc_e','code_128','code_39'];
+                                    var formats=wanted.filter(function(x){return supported.indexOf(x)>=0;});
+                                    if(formats.length){
+                                        var detector=new BarcodeDetector({formats:formats});
+                                        for(var oi=0;oi<orientationCanvases.length;oi++){
+                                            var detected=await detector.detect(orientationCanvases[oi]);
+                                            if(!detected||!detected.length)continue;
+                                            detected.forEach(function(b){
+                                                var box=b.boundingBox, area=box?Math.max(0,box.width*box.height):0;
+                                                addCandidate(candidates,b.rawValue,{native:true,format:b.format,area:area,source:'native-'+oi});
+                                            });
+                                        }
+                                        var nativeList=Object.keys(candidates).map(function(k){return candidates[k];}).filter(function(x){return x.nativeHits>0;});
+                                        /* لو وجد EAN/UPC أصلي نختاره مباشرة، مع تفضيل الأكبر مساحة. */
+                                        nativeList.sort(function(a,b){
+                                            var arA=(a.retailHits>0?100000000000:0)+a.area;
+                                            var arB=(b.retailHits>0?100000000000:0)+b.area;
+                                            return arB-arA;
+                                        });
+                                        if(nativeList.length){
+                                            var best=nativeList[0];
+                                            if(commit(best.code,'تم التعرف على الباركود الحقيقي من الصورة: '+best.code)){
+                                                nativeFound=true;
+                                            }
+                                        }
+                                    }
+                                }
+                            } catch(err){
+                                console.warn('BarcodeDetector image scan:',err);
+                            }
+
+                            if(nativeFound){ input.value=''; return; }
+
+                            /* 2) احتياطي Quagga: نبدأ بـ EAN/UPC فقط، ثم نسمح بالأنواع العامة
+                             * فقط إذا لم نجد أي نتيجة تجزئة تجارية مؤكدة. */
+                            if(typeof Quagga==='undefined'){
+                                toast('المتصفح لم يدعم قراءة الباركود الأصلية ومكتبة المسح غير متوفرة','error');
+                                input.value=''; return;
+                            }
+
+                            var variants=[];
+                            orientationCanvases.forEach(function(c,idx){
+                                variants.push({name:'ori'+idx+'-original',data:c,readers:['ean_reader','ean_8_reader','upc_reader']});
+                                variants.push({name:'ori'+idx+'-contrast',data:canvasVariant(c,'contrast'),readers:['ean_reader','ean_8_reader','upc_reader']});
+                                variants.push({name:'ori'+idx+'-gray',data:canvasVariant(c,'gray'),readers:['ean_reader','ean_8_reader','upc_reader']});
+                            });
+
+                            var pending=variants.length, done=0, accepted=false;
+                            function finishOne(){
+                                done++;
+                                if(done!==pending || accepted)return;
+                                var list=Object.keys(candidates).map(function(k){return candidates[k];});
+                                /* لا نقبل EAN/UPC من نتيجة واحدة؛ يلزم تكرار نفس الرقم من مصدرين مختلفين. */
+                                var retail=list.filter(function(x){return x.retailHits>=2;});
+                                retail.sort(function(a,b){return (b.retailHits-a.retailHits)||(b.hits-a.hits);});
+                                if(retail.length){accepted=commit(retail[0].code,'تم تأكيد الباركود الحقيقي من الصورة: '+retail[0].code);}
+                                if(!accepted)toast('لم يتم العثور على باركود موثوق. قص الصورة حول الباركود أو ارفع صورة أوضح ثم حاول مرة أخرى.','error');
+                            }
+
+                            variants.forEach(function(v){
+                                try{
+                                    Quagga.decodeSingle({
+                                        src:v.data.toDataURL('image/png'), numOfWorkers:0, locate:true,
+                                        locator:{patchSize:'large',halfSample:false},
+                                        decoder:{multiple:false,readers:v.readers}
+                                    },function(r){
+                                        if(r&&r.codeResult&&r.codeResult.code){
+                                            var code=normalizeScannedBarcode(r.codeResult.code);
+                                            if(isValidBarcodeValue(code)) addCandidate(candidates,code,{format:(r.codeResult.format||'ean'),source:v.name,area:0});
+                                        }
+                                        finishOne();
+                                    });
+                                }catch(err){console.warn('Quagga image scan:',err);finishOne();}
+                            });
+
+                            input.value='';
                         };
+                        img.onerror=function(){toast('تعذر قراءة الصورة','error');};
+                        img.src=ev.target.result;
                     };
                     reader.readAsDataURL(file);
-                    this.value = '';
+                    input.value='';
                 });
             }
 
@@ -9713,6 +11153,13 @@ function unitOptionsForProduct(p) {
             if ($('#btnExportReport')) $('#btnExportReport').addEventListener('click', exportReport);
             if ($('#btnPrintReport')) $('#btnPrintReport').addEventListener('click', printReport);
 
+            loadScaleConfig();
+            ['scaleProtocol','scaleBaud','scaleParity','scaleDataBits','scaleStopBits'].forEach(function(id){
+                if($('#'+id))$('#'+id).addEventListener('change',function(){
+                    if(scalePort){toast('افصل الميزان ثم أعد توصيله بعد تغيير إعدادات الاتصال.','warn');return;}
+                    saveScaleConfigFromUI();
+                });
+            });
             if ($('#btnConnectScale')) $('#btnConnectScale').addEventListener('click', async function(){
                 try { await connectScale(); } catch(e) { toast(e.message || 'تعذر توصيل الميزان','error'); }
             });
@@ -9724,7 +11171,7 @@ function unitOptionsForProduct(p) {
             if ($('#scaleProductPrice')) $('#scaleProductPrice').addEventListener('input', function(){
                 var m=$('#scaleWeightedModal'), w=num(m&&m.dataset.weight); txt('scaleModalTotal',money(num(this.value)*w));
             });
-            if ($('#btnConnectPrinter')) $('#btnConnectPrinter').addEventListener('click', connectThermalPrinterDirect);
+            if ($('#btnConnectPrinter')) $('#btnConnectPrinter').addEventListener('click', connectThermalPrinter);
             if ($('#btnConnectUSBPrinter')) $('#btnConnectUSBPrinter').addEventListener('click', async function(){
                 try { await connectWebSerialPrinter(); } catch(e) { toast('تعذر توصيل USB/Serial','error'); }
             });
@@ -9734,7 +11181,10 @@ function unitOptionsForProduct(p) {
             if ($('#scaleWeightedSavePrint')) $('#scaleWeightedSavePrint').addEventListener('click', saveScaleWeightedProductAndPrint);
             if (navigator.serial) {
                 navigator.serial.addEventListener('disconnect', function(e){
-                    if(scalePort && e.target===scalePort){ scalePort=null; setScaleStatus(false,'انقطع الاتصال'); }
+                    if(scalePort && e.target===scalePort){
+                        stopScalePolling(); scalePort=null; scaleWriter=null; scaleReader=null; scaleReadLoopActive=false;
+                        setScaleStatus(false,'انقطع الاتصال'); txt('scaleLiveText','انقطع اتصال الميزان');
+                    }
                 });
             }
             if ($('#btnTestPrinter')) $('#btnTestPrinter').addEventListener('click', testThermalPrinter);
@@ -9828,14 +11278,6 @@ function unitOptionsForProduct(p) {
                     DB.settings.phone = val('setStorePhone');
                     DB.settings.phone2 = val('setStorePhone2');
                     DB.settings.storeType = val('setStoreType') || 'grocery';
-                    var newUsername=String(val('setAuthUsername')||'').trim(), newPassword=String(val('setAuthPassword')||'');
-                    var me=getCurrentUser(), conflict=(DB.users||[]).find(function(u){return u.username===newUsername && u.id!==me.id;});
-                    if(!newUsername || !newPassword){toast('اسم المستخدم والرقم السري مطلوبان','error');return;}
-                    if(conflict){toast('اسم المستخدم مستخدم بالفعل','error');return;}
-                    me.username=newUsername; me.name=me.name||newUsername; me.password=newPassword;
-                    if(me.role==='admin'){ DB.settings.authUsername=newUsername; DB.settings.authPassword=newPassword; }
-                    var linkedEmp=DB.employees.find(function(e){return e.userId===me.id;}); if(linkedEmp){linkedEmp.username=newUsername;linkedEmp.password=newPassword;linkedEmp.name=me.name;}
-                    sessionStorage.setItem('smartstore_logged_user',newUsername); CURRENT_USER=me;
                     DB.settings.address = val('setStoreAddress');
                     DB.settings.lowStock = int(val('setLowStock')) || 5;
                     DB.settings.securityTimeout = Number(val('setSecurityTimeout')||0); DB.settings.securityMaxAttempts=Number(val('setSecurityMaxAttempts')||5); DB.settings.securityLockMinutes=Number(val('setSecurityLockMinutes')||5);
@@ -9851,6 +11293,48 @@ function unitOptionsForProduct(p) {
                     toast('تم حفظ الإعدادات');
                 });
             }
+            if ($('#btnSaveCredentials')) $('#btnSaveCredentials').addEventListener('click', async function(){
+                var newUsername=String(val('setAuthUsername')||'').trim();
+                var newPassword=String(val('setAuthPassword')||'');
+                var me=getCurrentUser();
+                if(!me){toast('يجب تسجيل الدخول أولًا','error');return;}
+                var conflict=(DB.users||[]).find(function(u){return String(u.username||'').trim()===newUsername && u.id!==me.id;});
+                if(!newUsername || !newPassword){toast('اسم المستخدم والرقم السري مطلوبان','error');return;}
+                if(newUsername.length<3){toast('اسم المستخدم يجب أن يكون 3 أحرف على الأقل','error');return;}
+                if(newPassword.length<4){toast('الرقم السري يجب أن يكون 4 أحرف/أرقام على الأقل','error');return;}
+                if(conflict){toast('اسم المستخدم مستخدم بالفعل','error');return;}
+
+                /* Change credentials in-place: preserve the same user ID and all history. */
+                me.username=newUsername;
+                me.password=newPassword;
+                delete me.passwordHash;
+                if(me.role==='admin'){
+                    DB.settings.authUsername=newUsername;
+                    DB.settings.authPassword=newPassword;
+                    delete DB.settings.authPasswordHash;
+                }
+                var linkedEmp=(DB.employees||[]).find(function(e){return e.userId===me.id;});
+                if(linkedEmp){linkedEmp.username=newUsername;linkedEmp.password=newPassword;}
+                CURRENT_USER=me;
+                sessionStorage.setItem('smartstore_logged_user',newUsername);
+                localStorage.setItem('smartstore_logged_user',newUsername);
+
+                /* Hash the new password immediately when Web Crypto is available. */
+                try{
+                    if(typeof v40Hash==='function'){
+                        var h=await v40Hash(newPassword);
+                        if(h){me.passwordHash=h;delete me.password;if(me.role==='admin'){DB.settings.authPasswordHash=h;delete DB.settings.authPassword;}}
+                    }
+                }catch(_){/* legacy plaintext fallback is handled by the existing migration */}
+
+                save();
+                updateHeader();
+                refreshAll();
+                fillSettings();
+                setPasswordVisibility('settingsPasswordToggle','setAuthPassword',false);
+                toast('تم تحديث اسم المستخدم والرقم السري بنجاح ✓','success');
+            });
+
             if ($('#btnMakeBackup')) $('#btnMakeBackup').addEventListener('click', makeBackup);
 
             if ($('#btnExport')) {
@@ -10687,24 +12171,53 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
                 lanPersistMeta();
             }
 
+            function lanMergeServerIntoLocal(serverData) {
+                var remote = lanNormalize(JSON.parse(JSON.stringify(serverData || {})));
+                if (!remote) return DB;
+                var keys = ['products','customers','suppliers','transactions','payments','movements','employees','users','expenses','installments','purchaseDrafts','shifts','heldCarts'];
+                keys.forEach(function(key){
+                    if (!Array.isArray(DB[key])) DB[key]=[];
+                    if (!Array.isArray(remote[key])) remote[key]=[];
+                    DB[key] = v40MergeArray(DB[key], remote[key]);
+                });
+                if (Array.isArray(remote.categories)) {
+                    DB.categories = Array.from(new Set((DB.categories||[]).concat(remote.categories)));
+                }
+                DB.settings = Object.assign({}, remote.settings || {}, DB.settings || {});
+                return DB;
+            }
+
             function lanSendState() {
                 if (!LAN_ENABLED || !LAN_READY) { LAN_PENDING = true; return; }
                 if (LAN_SENDING) { LAN_PENDING = true; return; }
                 LAN_SENDING = true; LAN_PENDING = false;
                 var localStamp = LAN_LOCAL_UPDATED_AT;
-                var payload;
-                try {
-                    payload = JSON.stringify({
+
+                /* قبل رفع الحالة المحلية، اجلب آخر نسخة من السيرفر وادمج السجلات
+                   ذات المعرّفات المختلفة/الأحدث. هذا يمنع جهازًا من استبدال
+                   تغييرات جهاز آخر لمجرد أنه أرسل DB كاملة. */
+                fetch(LAN_STATE_URL).then(function(r){
+                    if(!r.ok) throw new Error('server read failed');
+                    return r.json();
+                }).then(function(remote){
+                    if (remote && remote.data) {
+                        lanMergeServerIntoLocal(remote.data);
+                        LAN_LAST_REV = Math.max(LAN_LAST_REV, Number(remote.revision || 0));
+                        lanSaveLocalOnly();
+                    }
+
+                    var payload = JSON.stringify({
                         clientId: LAN_CLIENT_ID,
                         clientUpdatedAt: localStamp,
                         forceLatestLocal: true,
                         data: DB
                     });
-                } catch(e) { LAN_SENDING=false; LAN_PENDING=true; return; }
-
-                fetch(LAN_STATE_URL, {
-                    method:'POST', headers:{'Content-Type':'application/json'},
-                    body:payload, keepalive:true
+                    return fetch(LAN_STATE_URL, {
+                        method:'POST',
+                        headers:{'Content-Type':'application/json'},
+                        body:payload,
+                        keepalive:true
+                    });
                 }).then(function(r){
                     if(!r.ok) throw new Error('save failed');
                     return r.json();
@@ -10716,8 +12229,12 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
                         LAN_LAST_LOCAL_SNAPSHOT = null;
                         try { localStorage.removeItem(LAN_QUEUE_KEY); } catch(e) {}
                         lanPersistMeta();
+                    } else {
+                        LAN_PENDING = true;
+                        LAN_LOCAL_DIRTY = true;
+                        lanPersistMeta();
                     }
-                    lanSetStatus(true, 'تم الاتصال بالسيرفر ومزامنة البيانات');
+                    lanSetStatus(true, 'تمت مزامنة آخر التعديلات');
                 }).catch(function(){
                     LAN_PENDING = true;
                     LAN_LOCAL_DIRTY = true;
@@ -10836,7 +12353,7 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
                 var card=document.createElement('div'); card.id='lanSettingsCard'; card.className='card';
                 card.style.marginTop='1rem';
                 card.innerHTML='<div class="card-head"><h2><i class="fas fa-network-wired"></i> وضع العمل المحلي والمزامنة</h2><span class="badge-pill" id="lanSettingsBadge">Offline-first</span></div>'+
-                    '<p style="margin:.5rem 0;color:var(--gray-600)">البيانات تحفظ محليًا أولًا. عند انقطاع الاتصال يمكنك البيع والشراء وتسجيل السندات، وعند عودة الاتصال يتم رفع آخر تعديل محلي للسيرفر تلقائيًا.</p>'+
+                    '<p style="margin:.5rem 0;color:var(--gray-600)">البيانات تحفظ محليًا أولًا. عند انقطاع الاتصال يمكنك البيع والشراء وتسجيل السندات، وعند عودة الاتصال تُدمج آخر التعديلات المحلية مع أحدث بيانات السيرفر ثم تُرفع تلقائيًا، مع الحفاظ على السجلات الأحدث لكل جهاز.</p>'+
                     '<div class="form-row"><div class="field-group"><label>حالة الاتصال</label><input class="input-field" id="lanSettingsState" readonly value="محلي — بانتظار الاتصال"></div>'+
                     '<div class="field-group"><label>الجهاز</label><input class="input-field" readonly value="'+esc(LAN_CLIENT_ID)+'"></div></div>'+
                     '<div class="btn-group"><button class="btn btn-primary" id="btnLanSync"><i class="fas fa-rotate"></i> مزامنة الآن</button></div>';
@@ -11121,6 +12638,24 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
             /* Start the IndexedDB mirror early; never block app startup. */
             v40OpenIDB();
             v40MirrorDB();
+
+            // ==================== PASSWORD VISIBILITY ====================
+            function setPasswordVisibility(toggleId,inputId,show){
+                var input=$('#'+inputId), btn=$('#'+toggleId);
+                if(!input||!btn)return;
+                input.type=show?'text':'password';
+                var icon=btn.querySelector('i');
+                if(icon) icon.className=show?'fas fa-eye-slash':'fas fa-eye';
+                btn.setAttribute('aria-label',show?'إخفاء كلمة المرور':'إظهار كلمة المرور');
+                btn.setAttribute('title',show?'إخفاء كلمة المرور':'إظهار كلمة المرور');
+            }
+            function initPasswordToggle(toggleId,inputId){
+                var btn=$('#'+toggleId),input=$('#'+inputId);
+                if(!btn||!input)return;
+                btn.addEventListener('click',function(e){e.preventDefault();setPasswordVisibility(toggleId,inputId,input.type!=='text');input.focus();});
+            }
+            initPasswordToggle('authPasswordToggle','authPassword');
+            initPasswordToggle('settingsPasswordToggle','setAuthPassword');
 
             // ==================== INIT ====================
             initSecurity();
