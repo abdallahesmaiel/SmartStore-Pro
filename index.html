@@ -9253,25 +9253,41 @@ function unitOptionsForProduct(p) {
                 try { if (Quagga.offDetected && scannerDetectedHandler) Quagga.offDetected(scannerDetectedHandler); } catch (e) {}
                 if (scanning) { try { Quagga.stop(); } catch (e) {} scanning = false; }
 
-                var workers = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
+                /*
+                 * V41 SMART CAMERA BARCODE SCANNER
+                 * - EAN/UPC أولاً لتقليل القراءات الوهمية من النصوص.
+                 * - مساحة قراءة أكبر، ودقة أعلى، وfocus مستمر عندما يدعمه الهاتف.
+                 * - patchSize صغير + halfSample=false لأن الباركود قد يكون صغيراً داخل صورة الكاميرا.
+                 * - لا نعتمد على قراءة واحدة: EAN/UPC مرتان، والأنواع العامة 3 مرات.
+                 */
                 Quagga.init({
                     inputStream: {
-                        name: "Live", type: "LiveStream", target: viewport,
+                        name: "Live",
+                        type: "LiveStream",
+                        target: viewport,
                         constraints: {
                             facingMode: { ideal: "environment" },
-                            width: { ideal: 1280, min: 640 },
-                            height: { ideal: 720, min: 480 },
-                            aspectRatio: { ideal: 1.777 }
+                            width: { ideal: 1920, min: 720 },
+                            height: { ideal: 1080, min: 480 },
+                            aspectRatio: { ideal: 16/9 },
+                            advanced: [
+                                { focusMode: "continuous" },
+                                { exposureMode: "continuous" },
+                                { whiteBalanceMode: "continuous" }
+                            ]
                         },
-                        area: { top: "18%", right: "5%", left: "5%", bottom: "18%" }
+                        /* اجعل معظم الإطار متاحاً للماسح؛ لا تقص الباركود إذا كان أعلى/أسفل الملصق. */
+                        area: { top: "8%", right: "2%", left: "2%", bottom: "8%" },
+                        singleChannel: false
                     },
                     locate: true,
-                    locator: { patchSize: "medium", halfSample: true },
-                    frequency: 10,
-                    numOfWorkers: workers,
+                    locator: { patchSize: "small", halfSample: false },
+                    frequency: 12,
+                    numOfWorkers: 0,
                     decoder: {
                         multiple: false,
-                        readers: ["ean_reader", "ean_8_reader", "upc_reader", "code_128_reader", "code_39_reader"]
+                        /* التجاري أولاً. الأنواع العامة في النهاية حتى لا تسرق قراءة EAN من الأرقام المجاورة. */
+                        readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_128_reader", "code_39_reader"]
                     }
                 }, function(err) {
                     if (err) {
@@ -9282,7 +9298,10 @@ function unitOptionsForProduct(p) {
                     }
                     scanning = true;
                     updateScannerStatus(true);
-                    Quagga.start();
+                    try { Quagga.start(); } catch (e) {
+                        scanning = false;
+                        toast('تعذر بدء ماسح الباركود', 'error');
+                    }
                 });
 
                 scannerDetectedHandler = function(r) {
@@ -9290,17 +9309,34 @@ function unitOptionsForProduct(p) {
                     var code = normalizeScannedBarcode(r.codeResult.code);
                     if (!isValidBarcodeValue(code)) return;
 
+                    var format = String(r.codeResult.format || '').toLowerCase();
+                    var retail = /ean|upc/.test(format) || /^\d{8,14}$/.test(code);
+                    var box = r.box;
+                    var boxW = 0, boxH = 0, boxArea = 0;
+                    if (Array.isArray(box) && box.length >= 4) {
+                        var xs = box.map(function(p){ return Number(p&&p[0])||0; });
+                        var ys = box.map(function(p){ return Number(p&&p[1])||0; });
+                        boxW = Math.max.apply(null,xs)-Math.min.apply(null,xs);
+                        boxH = Math.max.apply(null,ys)-Math.min.apply(null,ys);
+                        boxArea = boxW*boxH;
+                    }
+                    /* الباركود التجاري يكون أعرض بكثير من ارتفاعه؛ هذا يرفض كثيراً من النصوص. */
+                    if (boxW > 0 && boxH > 0 && retail && (boxW / Math.max(1,boxH)) < 1.35) return;
+
                     var now = Date.now();
-                    // نفس الكود يجب أن يظهر مرتين متتاليتين خلال 1.2 ثانية قبل اعتماده.
-                    // هذا يمنع قبول قراءة خاطئة من نص قريب أو باركود مجاور.
-                    if (scannerCandidate.code === code && now - scannerCandidate.lastAt <= 1200) {
+                    var needed = retail ? 2 : 3;
+                    if (scannerCandidate.code === code && now - scannerCandidate.lastAt <= 1300) {
                         scannerCandidate.count++;
                         scannerCandidate.lastAt = now;
                     } else {
                         scannerCandidate = { code: code, count: 1, firstAt: now, lastAt: now };
                     }
 
-                    if (scannerCandidate.count >= 2 && now - scannerCandidate.firstAt <= 1500) {
+                    /* لو كان الباركود موجوداً بالفعل في المنتجات، نسمح بتأكيد أسرع لكن ليس من قراءة واحدة. */
+                    var known = Array.isArray(DB.products) && DB.products.some(function(p){ return String(p.barcode||'')===code; });
+                    if (known) needed = retail ? 2 : 2;
+
+                    if (scannerCandidate.count >= needed && now - scannerCandidate.firstAt <= 1800) {
                         acceptCameraBarcode(code);
                     }
                 };
@@ -9309,6 +9345,7 @@ function unitOptionsForProduct(p) {
                     stopScan();
                 }
             }
+
 
             // ==================== V26+ ADVANCED INVENTORY ====================
             function ensureWarehouses(){
@@ -10851,173 +10888,144 @@ function unitOptionsForProduct(p) {
                         var img = new Image();
                         img.onload = async function() {
                             /*
-                             * قراءة الباركود من صورة:
-                             * المشكلة القديمة كانت أن Quagga كان يفحص الصورة كاملة بكل القراءات،
-                             * فيمكن أن يعتبر أرقام جدول التغذية/النصوص باركودًا صالحًا.
-                             * الأولوية الآن لـ BarcodeDetector الأصلي عندما يكون متاحًا،
-                             * ثم Quagga كحل احتياطي، مع إعطاء أولوية صريحة لـ EAN/UPC.
+                             * FAST IMAGE BARCODE SCANNER
+                             * إصلاح التجميد: لا توجد عشرات النسخ ولا تشغيل decodeSingle بالتوازي.
+                             * المسار: BarcodeDetector السريع أولاً، ثم محاولتا Quagga فقط عند الحاجة.
                              */
-                            var maxSide = 2200;
-                            var iw = img.naturalWidth || img.width, ih = img.naturalHeight || img.height;
-                            var ratio = Math.min(1, maxSide / Math.max(iw, ih));
-                            var base = document.createElement('canvas');
-                            base.width = Math.max(1, Math.round(iw * ratio));
-                            base.height = Math.max(1, Math.round(ih * ratio));
-                            var bctx = base.getContext('2d', {willReadFrequently:true});
-                            bctx.imageSmoothingEnabled = true;
-                            bctx.drawImage(img, 0, 0, base.width, base.height);
+                            var scanToken=(window.__barcodeImageScanToken||0)+1;
+                            window.__barcodeImageScanToken=scanToken;
+                            var cancelled=function(){return window.__barcodeImageScanToken!==scanToken;};
+                            var yieldUI=function(){return new Promise(function(resolve){requestAnimationFrame(resolve);});};
+                            var iw=img.naturalWidth||img.width, ih=img.naturalHeight||img.height;
+                            if(!iw||!ih){toast('تعذر قراءة أبعاد الصورة','error');return;}
 
-                            function rotateCanvas(source, deg) {
-                                if (!deg) return source;
-                                var c = document.createElement('canvas');
-                                var swap = deg === 90 || deg === 270;
-                                c.width = swap ? source.height : source.width;
-                                c.height = swap ? source.width : source.height;
-                                var ctx = c.getContext('2d', {willReadFrequently:true});
-                                ctx.translate(c.width/2, c.height/2);
-                                ctx.rotate(deg*Math.PI/180);
-                                ctx.drawImage(source, -source.width/2, -source.height/2);
+                            /* تقليل حجم الصورة قبل المعالجة يخفف الذاكرة ووقت القراءة على الهاتف. */
+                            var maxSide=1400, ratio=Math.min(1,maxSide/Math.max(iw,ih));
+                            var base=document.createElement('canvas');
+                            base.width=Math.max(1,Math.round(iw*ratio));
+                            base.height=Math.max(1,Math.round(ih*ratio));
+                            var bctx=base.getContext('2d',{willReadFrequently:true});
+                            bctx.imageSmoothingEnabled=true;
+                            bctx.imageSmoothingQuality='high';
+                            bctx.drawImage(img,0,0,base.width,base.height);
+
+                            function cropCanvas(source,x,y,w,h,scale){
+                                x=Math.max(0,Math.floor(x)); y=Math.max(0,Math.floor(y));
+                                w=Math.min(source.width-x,Math.floor(w)); h=Math.min(source.height-y,Math.floor(h));
+                                if(w<40||h<30)return null;
+                                scale=scale||1;
+                                var c=document.createElement('canvas');
+                                c.width=Math.max(1,Math.round(w*scale));
+                                c.height=Math.max(1,Math.round(h*scale));
+                                var ctx=c.getContext('2d',{willReadFrequently:true});
+                                ctx.imageSmoothingEnabled=true;
+                                ctx.imageSmoothingQuality='high';
+                                ctx.drawImage(source,x,y,w,h,0,0,c.width,c.height);
                                 return c;
                             }
 
-                            function canvasVariant(source, mode) {
-                                var c=document.createElement('canvas'); c.width=source.width; c.height=source.height;
-                                var ctx=c.getContext('2d',{willReadFrequently:true}); ctx.drawImage(source,0,0);
-                                if(!mode) return c;
-                                var data=ctx.getImageData(0,0,c.width,c.height), d=data.data;
-                                for(var i=0;i<d.length;i+=4){
-                                    var y=.299*d[i]+.587*d[i+1]+.114*d[i+2];
-                                    if(mode==='gray'){d[i]=d[i+1]=d[i+2]=y;}
-                                    else if(mode==='contrast'){y=Math.max(0,Math.min(255,(y-128)*2.1+128));d[i]=d[i+1]=d[i+2]=y;}
-                                    else if(mode==='threshold'){y=y>145?255:0;d[i]=d[i+1]=d[i+2]=y;}
-                                }
-                                ctx.putImageData(data,0,0); return c;
-                            }
-
-                            function addCandidate(map, raw, meta) {
-                                var code=normalizeScannedBarcode(raw);
-                                if(!isValidBarcodeValue(code)) return;
-                                var digits=/^\d+$/.test(code);
-                                var retail=(code.length===8||code.length===12||code.length===13||code.length===14);
-                                var fmt=String((meta&&meta.format)||'').toLowerCase();
-                                var isRetailFmt=/ean|upc/.test(fmt) || (retail && digits);
-                                var x=map[code]||(map[code]={code:code,hits:0,nativeHits:0,retailHits:0,area:0,formats:{},sources:{}});
-                                var source=String((meta&&meta.source)||'unknown');
-                                if(!x.sources[source]){x.sources[source]=true;x.hits++;}
-                                if(meta&&meta.native)x.nativeHits++;
-                                if(isRetailFmt)x.retailHits++;
-                                if(meta&&meta.area)x.area=Math.max(x.area,meta.area);
-                                if(fmt)x.formats[fmt]=true;
-                            }
-
-                            function commit(code, message) {
-                                if(!code) return false;
+                            function commit(code,message){
+                                if(cancelled())return false;
                                 code=normalizeScannedBarcode(code);
-                                if(!isValidBarcodeValue(code)) return false;
+                                if(!isValidBarcodeValue(code))return false;
                                 setVal('prodBarcode',code);
                                 var prodBarcode=$('#prodBarcode');
-                                if(prodBarcode && document.getElementById('page-products') && document.getElementById('page-products').classList.contains('active')){
+                                var productsPage=document.getElementById('page-products');
+                                if(prodBarcode&&productsPage&&productsPage.classList.contains('active')){
                                     prodBarcode.value=code;
                                     prodBarcode.dispatchEvent(new Event('input',{bubbles:true}));
-                                } else {
+                                }else{
                                     handleBarcodeScan(code);
                                 }
                                 toast(message||('تم التقاط الباركود: '+code),'success');
                                 return true;
                             }
 
-                            var candidates=Object.create(null);
-                            var orientations=[0,90,180,270];
-                            var orientationCanvases=[];
-                            orientations.forEach(function(deg){
-                                var c=rotateCanvas(base,deg);
-                                orientationCanvases.push(c);
-                                addCandidate; // keep helper referenced for minifiers/older engines
-                            });
+                            /* قصتان فقط؛ لا نبني 15-20 صورة معالجة. */
+                            var centerCrop=cropCanvas(base,base.width*.03,base.height*.18,base.width*.94,base.height*.64,1.35);
+                            var lowerCrop=null;
+                            var found=false;
 
-                            /* 1) المسار الأقوى: BarcodeDetector الأصلي.
-                             * نطلب فقط أنواع التجزئة التجارية المعروفة بدل ترك المتصفح يبحث في كل الأنواع.
-                             * هذا يقلل بشدة من تحويل أرقام النصوص إلى باركود وهمي. */
-                            var nativeFound=false;
-                            try {
-                                if(typeof BarcodeDetector!=='undefined' && BarcodeDetector.getSupportedFormats){
+                            /* 1) قارئ المتصفح الأصلي — أسرع مسار إذا كان مدعوماً. */
+                            try{
+                                if(typeof BarcodeDetector!=='undefined'&&BarcodeDetector.getSupportedFormats){
                                     var supported=await BarcodeDetector.getSupportedFormats();
-                                    var wanted=['ean_13','ean_8','upc_a','upc_e','code_128','code_39'];
-                                    var formats=wanted.filter(function(x){return supported.indexOf(x)>=0;});
-                                    if(formats.length){
-                                        var detector=new BarcodeDetector({formats:formats});
-                                        for(var oi=0;oi<orientationCanvases.length;oi++){
-                                            var detected=await detector.detect(orientationCanvases[oi]);
-                                            if(!detected||!detected.length)continue;
-                                            detected.forEach(function(b){
-                                                var box=b.boundingBox, area=box?Math.max(0,box.width*box.height):0;
-                                                addCandidate(candidates,b.rawValue,{native:true,format:b.format,area:area,source:'native-'+oi});
-                                            });
-                                        }
-                                        var nativeList=Object.keys(candidates).map(function(k){return candidates[k];}).filter(function(x){return x.nativeHits>0;});
-                                        /* لو وجد EAN/UPC أصلي نختاره مباشرة، مع تفضيل الأكبر مساحة. */
-                                        nativeList.sort(function(a,b){
-                                            var arA=(a.retailHits>0?100000000000:0)+a.area;
-                                            var arB=(b.retailHits>0?100000000000:0)+b.area;
-                                            return arB-arA;
-                                        });
-                                        if(nativeList.length){
-                                            var best=nativeList[0];
-                                            if(commit(best.code,'تم التعرف على الباركود الحقيقي من الصورة: '+best.code)){
-                                                nativeFound=true;
+                                    if(!cancelled()){
+                                        var wanted=['ean_13','ean_8','upc_a','upc_e','code_128','code_39'];
+                                        var formats=wanted.filter(function(x){return supported.indexOf(x)>=0;});
+                                        if(formats.length){
+                                            var detector=new BarcodeDetector({formats:formats});
+                                            var nativeList=[centerCrop,base];
+                                            for(var ni=0;ni<nativeList.length&&!found;ni++){
+                                                if(cancelled())return;
+                                                if(!nativeList[ni])continue;
+                                                await yieldUI();
+                                                try{
+                                                    var detected=await detector.detect(nativeList[ni]);
+                                                    if(detected&&detected.length){
+                                                        for(var di=0;di<detected.length;di++){
+                                                            var raw=normalizeScannedBarcode(detected[di].rawValue);
+                                                            if(isValidBarcodeValue(raw)&&/^(\d{8}|\d{12}|\d{13}|\d{14})$/.test(raw)){
+                                                                found=commit(raw,'تم قراءة الباركود من الصورة: '+raw);
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }catch(_){ }
                                             }
                                         }
                                     }
                                 }
-                            } catch(err){
-                                console.warn('BarcodeDetector image scan:',err);
-                            }
+                            }catch(err){console.warn('BarcodeDetector image scan:',err);}
 
-                            if(nativeFound){ input.value=''; return; }
-
-                            /* 2) احتياطي Quagga: نبدأ بـ EAN/UPC فقط، ثم نسمح بالأنواع العامة
-                             * فقط إذا لم نجد أي نتيجة تجزئة تجارية مؤكدة. */
+                            if(found||cancelled())return;
                             if(typeof Quagga==='undefined'){
-                                toast('المتصفح لم يدعم قراءة الباركود الأصلية ومكتبة المسح غير متوفرة','error');
-                                input.value=''; return;
+                                toast('مكتبة قراءة الباركود غير متوفرة في المتصفح','error');
+                                return;
                             }
 
-                            var variants=[];
-                            orientationCanvases.forEach(function(c,idx){
-                                variants.push({name:'ori'+idx+'-original',data:c,readers:['ean_reader','ean_8_reader','upc_reader']});
-                                variants.push({name:'ori'+idx+'-contrast',data:canvasVariant(c,'contrast'),readers:['ean_reader','ean_8_reader','upc_reader']});
-                                variants.push({name:'ori'+idx+'-gray',data:canvasVariant(c,'gray'),readers:['ean_reader','ean_8_reader','upc_reader']});
-                            });
-
-                            var pending=variants.length, done=0, accepted=false;
-                            function finishOne(){
-                                done++;
-                                if(done!==pending || accepted)return;
-                                var list=Object.keys(candidates).map(function(k){return candidates[k];});
-                                /* لا نقبل EAN/UPC من نتيجة واحدة؛ يلزم تكرار نفس الرقم من مصدرين مختلفين. */
-                                var retail=list.filter(function(x){return x.retailHits>=2;});
-                                retail.sort(function(a,b){return (b.retailHits-a.retailHits)||(b.hits-a.hits);});
-                                if(retail.length){accepted=commit(retail[0].code,'تم تأكيد الباركود الحقيقي من الصورة: '+retail[0].code);}
-                                if(!accepted)toast('لم يتم العثور على باركود موثوق. قص الصورة حول الباركود أو ارفع صورة أوضح ثم حاول مرة أخرى.','error');
-                            }
-
-                            variants.forEach(function(v){
+                            /*
+                             * 2) Quagga: محاولة أساسية واحدة على القص المكبر، ثم محاولة احتياطية واحدة فقط.
+                             * numOfWorkers يمنع حجز واجهة الصفحة، وhalfSample يسرّع تحديد موضع الباركود.
+                             */
+                            var attempts=[
+                                {canvas:centerCrop||base,patch:'small',size:1000},
+                                {canvas:(lowerCrop||(lowerCrop=cropCanvas(base,base.width*.03,base.height*.32,base.width*.94,base.height*.44,1.45))||base),patch:'medium',size:900}
+                            ];
+                            for(var qi=0;qi<attempts.length&&!found;qi++){
+                                if(cancelled())return;
+                                await yieldUI();
+                                var attempt=attempts[qi], src=attempt.canvas.toDataURL('image/jpeg',0.82);
                                 try{
-                                    Quagga.decodeSingle({
-                                        src:v.data.toDataURL('image/png'), numOfWorkers:0, locate:true,
-                                        locator:{patchSize:'large',halfSample:false},
-                                        decoder:{multiple:false,readers:v.readers}
-                                    },function(r){
-                                        if(r&&r.codeResult&&r.codeResult.code){
-                                            var code=normalizeScannedBarcode(r.codeResult.code);
-                                            if(isValidBarcodeValue(code)) addCandidate(candidates,code,{format:(r.codeResult.format||'ean'),source:v.name,area:0});
-                                        }
-                                        finishOne();
+                                    await new Promise(function(resolve){
+                                        var settled=false;
+                                        var done=function(){if(!settled){settled=true;resolve();}};
+                                        try{
+                                            var workers=Math.max(1,Math.min(2,navigator.hardwareConcurrency||2));
+                                            Quagga.decodeSingle({
+                                                src:src,
+                                                numOfWorkers:workers,
+                                                locate:true,
+                                                locator:{patchSize:attempt.patch,halfSample:true},
+                                                inputStream:{size:attempt.size},
+                                                decoder:{multiple:false,readers:['ean_reader','ean_8_reader','upc_reader','upc_e_reader']}
+                                            },function(r){
+                                                if(r&&r.codeResult&&r.codeResult.code){
+                                                    var code=normalizeScannedBarcode(r.codeResult.code);
+                                                    if(isValidBarcodeValue(code)&&/^(\d{8}|\d{12}|\d{13}|\d{14})$/.test(code)){
+                                                        found=commit(code,'تم تأكيد الباركود من الصورة: '+code);
+                                                    }
+                                                }
+                                                done();
+                                            });
+                                        }catch(err){console.warn('Quagga image scan:',err);done();}
                                     });
-                                }catch(err){console.warn('Quagga image scan:',err);finishOne();}
-                            });
+                                }catch(err){console.warn('Barcode image attempt:',err);}
+                            }
 
-                            input.value='';
+                            if(!found&&!cancelled()){
+                                toast('لم يتم العثور على باركود واضح. قص الصورة حول الباركود أو استخدم صورة أقرب ثم حاول مرة أخرى.','error');
+                            }
                         };
                         img.onerror=function(){toast('تعذر قراءة الصورة','error');};
                         img.src=ev.target.result;
