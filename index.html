@@ -7554,7 +7554,7 @@ function unitOptionsForProduct(p) {
                         var reserved = inCart ? num(inCart.baseQty) : 0;
                         var avail = Math.max(0, q - reserved);
                         var barcode = normalizeBarcodeDigits(String(p.barcode || ''));
-                        return '<div class="pos-item ' + (avail <= 0 ? 'out' : '') + '" onclick="posAdd(\'' + p.id + '\')">' +
+                        return '<div class="pos-item ' + (avail <= 0 ? 'out' : '') + '" onclick="posAddFromSearch(\'' + p.id + '\')">' +
                             '<span class="p-qty badge ' + (avail <= 0 ? 'badge-red' : avail <= minStockOf(p) ? 'badge-amber' : 'badge-green') + '">' +
                             fmt(avail) + ' ' + baseUnitLabel(p.baseUnit) + '</span>' +
                             (p.image ? '<img src="' + p.image + '" class="p-img">' : '<div class="p-img"><i class="fas fa-box"></i></div>') +
@@ -7571,6 +7571,13 @@ function unitOptionsForProduct(p) {
                 var opts = unitOptionsForProduct(p);
                 return opts.find(function(o){return o.key === line.unitKey;}) || opts[0];
             }
+
+            window.posAddFromSearch = function(pid) {
+                posAdd(pid);
+                var search = $('#posSearch');
+                if (search) search.value = '';
+                renderPosGrid('');
+            };
 
             window.posAdd = function(pid, forcedWeightKg) {
                 var p = DB.products.find(function(x){return x.id === pid;});
@@ -9306,10 +9313,14 @@ function unitOptionsForProduct(p) {
                 if (scannerTarget === 'pos') {
                     var posInput = $('#posSearch');
                     if (posInput) {
+                        /* أظهر نتيجة الباركود لحظة القراءة فقط، ثم أعد شبكة المنتجات كاملة
+                           بعد الإضافة حتى لا يبقى البحث محصورًا على المنتج الممسوح. */
                         posInput.value = code;
                         posInput.dispatchEvent(new Event('input', {bubbles:true}));
                     }
                     handleBarcodeScan(code);
+                    if (posInput) posInput.value = '';
+                    renderPosGrid('');
                 } else {
                     setVal('prodBarcode', code);
                     handleBarcodeScan(code);
