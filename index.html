@@ -9193,6 +9193,10 @@ function unitOptionsForProduct(p) {
             var scanning = false;
             var scannerCandidate = { code: '', count: 0, firstAt: 0, lastAt: 0 };
             var scannerDetectedHandler = null;
+            var scannerNativeRAF = 0;
+            var scannerNativeStream = null;
+            var scannerNativeDetector = null;
+            var scannerNativeLastDetect = 0;
 
             function normalizeScannedBarcode(raw) {
                 return String(raw == null ? '' : raw)
@@ -9232,120 +9236,224 @@ function unitOptionsForProduct(p) {
             }
 
             function stopScan() {
+                scanning = false;
+                if (scannerNativeRAF) { cancelAnimationFrame(scannerNativeRAF); scannerNativeRAF = 0; }
+                scannerNativeDetector = null;
+                scannerNativeLastDetect = 0;
+                if (scannerNativeStream) {
+                    try { scannerNativeStream.getTracks().forEach(function(t){ try { t.stop(); } catch(e){} }); } catch(e){}
+                    scannerNativeStream = null;
+                }
                 if (typeof Quagga !== 'undefined') {
                     try { if (Quagga.offDetected && scannerDetectedHandler) Quagga.offDetected(scannerDetectedHandler); } catch (e) {}
-                    try { if (scanning) Quagga.stop(); } catch (e) {}
+                    try { Quagga.stop(); } catch (e) {}
                 }
-                scanning = false;
                 scannerDetectedHandler = null;
                 resetScannerCandidate();
+                var viewport = $('#scanner-viewport');
+                if (viewport) viewport.innerHTML = '';
                 var section = $('#cameraSection');
                 if (section) section.style.display = 'none';
                 updateScannerStatus(false);
             }
 
-            function startScan() {
+            function scannerCameraConstraints() {
+                return {
+                    audio: false,
+                    video: {
+                        facingMode: { ideal: 'environment' },
+                        width: { ideal: 1280, min: 640 },
+                        height: { ideal: 720, min: 480 },
+                        aspectRatio: { ideal: 16/9 }
+                    }
+                };
+            }
+
+            function tuneScannerTrack(track) {
+                if (!track || !track.getCapabilities || !track.applyConstraints) return;
+                try {
+                    var caps = track.getCapabilities() || {};
+                    var advanced = [];
+                    if (caps.focusMode && caps.focusMode.indexOf('continuous') >= 0) advanced.push({focusMode:'continuous'});
+                    if (caps.exposureMode && caps.exposureMode.indexOf('continuous') >= 0) advanced.push({exposureMode:'continuous'});
+                    if (caps.whiteBalanceMode && caps.whiteBalanceMode.indexOf('continuous') >= 0) advanced.push({whiteBalanceMode:'continuous'});
+                    if (caps.zoom && Number(caps.zoom.max) > Number(caps.zoom.min)) {
+                        var zmin=Number(caps.zoom.min)||1, zmax=Number(caps.zoom.max)||zmin;
+                        var z=Math.min(zmax, Math.max(zmin, zmin + (zmax-zmin)*0.16));
+                        if (z > zmin + 0.05) advanced.push({zoom:z});
+                    }
+                    if (advanced.length) track.applyConstraints({advanced:advanced}).catch(function(){});
+                } catch(e) {}
+            }
+
+            function scannerNativeCandidate(raw, format, box) {
+                var code = normalizeScannedBarcode(raw);
+                if (!isValidBarcodeValue(code)) return false;
+                var f=String(format||'').toLowerCase();
+                var retail=/ean|upc/.test(f) || /^\d{8,14}$/.test(code);
+                if (box && Number(box.width)>0 && Number(box.height)>0 && retail) {
+                    var ratio=Number(box.width)/Math.max(1,Number(box.height));
+                    if (ratio < 1.25) return false;
+                }
+                var now=Date.now();
+                if (scannerCandidate.code===code && now-scannerCandidate.lastAt<=700) {
+                    scannerCandidate.count++;
+                    scannerCandidate.lastAt=now;
+                } else {
+                    scannerCandidate={code:code,count:1,firstAt:now,lastAt:now};
+                }
+                /* BarcodeDetector is browser-native and its result is already decoded;
+                   two close frames prevent an accidental transient read without making the user wait. */
+                if (scannerCandidate.count>=2 && now-scannerCandidate.firstAt<=900) {
+                    acceptCameraBarcode(code);
+                    return true;
+                }
+                return false;
+            }
+
+            function startNativeScanner(video, detector) {
+                scannerNativeDetector=detector;
+                scannerNativeLastDetect=0;
+                var loop=function(ts){
+                    if (!scanning || !scannerNativeDetector || !video || video.readyState<2) {
+                        if (scanning) scannerNativeRAF=requestAnimationFrame(loop);
+                        return;
+                    }
+                    /* Keep detection around 10-12 fps: fast enough for a cashier scan,
+                       while avoiding a decode call on every camera frame. */
+                    if (ts-scannerNativeLastDetect < 80) {
+                        scannerNativeRAF=requestAnimationFrame(loop);
+                        return;
+                    }
+                    scannerNativeLastDetect=ts;
+                    scannerNativeDetector.detect(video).then(function(items){
+                        if (!scanning || !items || !items.length) return;
+                        for(var i=0;i<items.length;i++){
+                            var b=items[i];
+                            if(scannerNativeCandidate(b.rawValue,b.format,b.boundingBox)) return;
+                        }
+                    }).catch(function(){}).finally(function(){
+                        if (scanning) scannerNativeRAF=requestAnimationFrame(loop);
+                    });
+                };
+                scannerNativeRAF=requestAnimationFrame(loop);
+            }
+
+            async function tryStartNativeScanner(viewport) {
+                if (!('BarcodeDetector' in window) || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+                var formats=['ean_13','ean_8','upc_a','upc_e','code_128','code_39'];
+                try {
+                    if (BarcodeDetector.getSupportedFormats) {
+                        var supported=await BarcodeDetector.getSupportedFormats();
+                        formats=formats.filter(function(f){return supported.indexOf(f)>=0;});
+                    }
+                    if (!formats.length) return false;
+                    var detector=new BarcodeDetector({formats:formats});
+                    var stream=await navigator.mediaDevices.getUserMedia(scannerCameraConstraints());
+                    var video=document.createElement('video');
+                    video.autoplay=true; video.muted=true; video.playsInline=true;
+                    video.setAttribute('playsinline','');
+                    video.style.cssText='width:100%;height:100%;object-fit:cover;display:block;';
+                    viewport.innerHTML='';
+                    viewport.appendChild(video);
+                    scannerNativeStream=stream;
+                    video.srcObject=stream;
+                    await video.play();
+                    tuneScannerTrack(stream.getVideoTracks()[0]);
+                    scannerNativeDetector=detector;
+                    startNativeScanner(video,detector);
+                    return true;
+                } catch(e) {
+                    if (scannerNativeStream) {
+                        try { scannerNativeStream.getTracks().forEach(function(t){t.stop();}); } catch(_){}
+                        scannerNativeStream=null;
+                    }
+                    scannerNativeDetector=null;
+                    if (scannerNativeRAF) { cancelAnimationFrame(scannerNativeRAF); scannerNativeRAF=0; }
+                    if (viewport) viewport.innerHTML='';
+                    return false;
+                }
+            }
+
+            async function startScan() {
                 var section = $('#cameraSection');
                 var viewport = $('#scanner-viewport');
                 if (section) section.style.display = 'block';
                 resetScannerCandidate();
-                if (typeof Quagga === 'undefined') { toast('مكتبة المسح غير متوفرة', 'error'); return; }
-                try { if (Quagga.offDetected && scannerDetectedHandler) Quagga.offDetected(scannerDetectedHandler); } catch (e) {}
-                if (scanning) { try { Quagga.stop(); } catch (e) {} scanning = false; }
+                stopScan();
+                if (section) section.style.display = 'block';
+                if (!viewport) return;
 
-                /*
-                 * V41 SMART CAMERA BARCODE SCANNER
-                 * - EAN/UPC أولاً لتقليل القراءات الوهمية من النصوص.
-                 * - مساحة قراءة أكبر، ودقة أعلى، وfocus مستمر عندما يدعمه الهاتف.
-                 * - patchSize صغير + halfSample=false لأن الباركود قد يكون صغيراً داخل صورة الكاميرا.
-                 * - لا نعتمد على قراءة واحدة: EAN/UPC مرتان، والأنواع العامة 3 مرات.
-                 */
+                /* First path: browser-native accelerated detection. On supported phones this
+                   is much closer to a dedicated barcode app than repeatedly decoding frames
+                   through a JavaScript locator. BarcodeDetector is not available in every
+                   browser/context, so Quagga remains the fallback. */
+                if (await tryStartNativeScanner(viewport)) {
+                    scanning=true;
+                    updateScannerStatus(true);
+                    return;
+                }
+
+                if (typeof Quagga === 'undefined') {
+                    toast('لا توجد طريقة قراءة باركود متاحة في هذا المتصفح', 'error');
+                    if (section) section.style.display='none';
+                    return;
+                }
+
+                try { if (Quagga.offDetected && scannerDetectedHandler) Quagga.offDetected(scannerDetectedHandler); } catch(e){}
+                /* Fallback optimized for speed: 1280p + halfSample + medium patches.
+                   The scan box is deliberately wide, so the expensive locator is disabled. */
                 Quagga.init({
-                    inputStream: {
-                        name: "Live",
-                        type: "LiveStream",
-                        target: viewport,
-                        constraints: {
-                            facingMode: { ideal: "environment" },
-                            width: { ideal: 1920, min: 720 },
-                            height: { ideal: 1080, min: 480 },
-                            aspectRatio: { ideal: 16/9 },
-                            advanced: [
-                                { focusMode: "continuous" },
-                                { exposureMode: "continuous" },
-                                { whiteBalanceMode: "continuous" }
-                            ]
-                        },
-                        /* اجعل معظم الإطار متاحاً للماسح؛ لا تقص الباركود إذا كان أعلى/أسفل الملصق. */
-                        area: { top: "8%", right: "2%", left: "2%", bottom: "8%" },
-                        singleChannel: false
+                    inputStream:{
+                        name:'Live', type:'LiveStream', target:viewport,
+                        constraints:scannerCameraConstraints().video,
+                        area:{top:'12%',right:'5%',left:'5%',bottom:'12%'},
+                        singleChannel:false
                     },
-                    locate: true,
-                    locator: { patchSize: "small", halfSample: false },
-                    frequency: 12,
-                    numOfWorkers: 0,
-                    decoder: {
-                        multiple: false,
-                        /* التجاري أولاً. الأنواع العامة في النهاية حتى لا تسرق قراءة EAN من الأرقام المجاورة. */
-                        readers: ["ean_reader", "ean_8_reader", "upc_reader", "upc_e_reader", "code_128_reader", "code_39_reader"]
-                    }
-                }, function(err) {
-                    if (err) {
-                        scanning = false;
-                        if (section) section.style.display = 'none';
-                        toast('تعذر الوصول للكاميرا: تأكد من السماح للمتصفح باستخدام الكاميرا', 'error');
+                    locate:false,
+                    locator:{patchSize:'medium',halfSample:true},
+                    frequency:15,
+                    numOfWorkers:0,
+                    decoder:{multiple:false,readers:['ean_reader','ean_8_reader','upc_reader','upc_e_reader','code_128_reader','code_39_reader']}
+                },function(err){
+                    if(err){
+                        scanning=false;
+                        if(section)section.style.display='none';
+                        toast('تعذر الوصول للكاميرا: تأكد من السماح للمتصفح باستخدام الكاميرا','error');
                         return;
                     }
-                    scanning = true;
+                    scanning=true;
                     updateScannerStatus(true);
-                    try { Quagga.start(); } catch (e) {
-                        scanning = false;
-                        toast('تعذر بدء ماسح الباركود', 'error');
-                    }
+                    try{
+                        Quagga.start();
+                        var track=null;
+                        try{track=Quagga.CameraAccess && Quagga.CameraAccess.getActiveTrack ? Quagga.CameraAccess.getActiveTrack():null;}catch(e){}
+                        tuneScannerTrack(track);
+                    }catch(e){scanning=false;toast('تعذر بدء ماسح الباركود','error');}
                 });
 
-                scannerDetectedHandler = function(r) {
-                    if (!scanning || !r || !r.codeResult || !r.codeResult.code) return;
-                    var code = normalizeScannedBarcode(r.codeResult.code);
-                    if (!isValidBarcodeValue(code)) return;
-
-                    var format = String(r.codeResult.format || '').toLowerCase();
-                    var retail = /ean|upc/.test(format) || /^\d{8,14}$/.test(code);
-                    var box = r.box;
-                    var boxW = 0, boxH = 0, boxArea = 0;
-                    if (Array.isArray(box) && box.length >= 4) {
-                        var xs = box.map(function(p){ return Number(p&&p[0])||0; });
-                        var ys = box.map(function(p){ return Number(p&&p[1])||0; });
-                        boxW = Math.max.apply(null,xs)-Math.min.apply(null,xs);
-                        boxH = Math.max.apply(null,ys)-Math.min.apply(null,ys);
-                        boxArea = boxW*boxH;
+                scannerDetectedHandler=function(r){
+                    if(!scanning||!r||!r.codeResult||!r.codeResult.code)return;
+                    var code=normalizeScannedBarcode(r.codeResult.code);
+                    if(!isValidBarcodeValue(code))return;
+                    var format=String(r.codeResult.format||'').toLowerCase();
+                    var retail=/ean|upc/.test(format)||/^\d{8,14}$/.test(code);
+                    var box=r.box;
+                    if(Array.isArray(box)&&box.length>=4&&retail){
+                        var xs=box.map(function(p){return Number(p&&p[0])||0;});
+                        var ys=box.map(function(p){return Number(p&&p[1])||0;});
+                        var bw=Math.max.apply(null,xs)-Math.min.apply(null,xs), bh=Math.max.apply(null,ys)-Math.min.apply(null,ys);
+                        if(bw>0&&bh>0&&(bw/Math.max(1,bh))<1.25)return;
                     }
-                    /* الباركود التجاري يكون أعرض بكثير من ارتفاعه؛ هذا يرفض كثيراً من النصوص. */
-                    if (boxW > 0 && boxH > 0 && retail && (boxW / Math.max(1,boxH)) < 1.35) return;
-
-                    var now = Date.now();
-                    var needed = retail ? 2 : 3;
-                    if (scannerCandidate.code === code && now - scannerCandidate.lastAt <= 1300) {
-                        scannerCandidate.count++;
-                        scannerCandidate.lastAt = now;
-                    } else {
-                        scannerCandidate = { code: code, count: 1, firstAt: now, lastAt: now };
-                    }
-
-                    /* لو كان الباركود موجوداً بالفعل في المنتجات، نسمح بتأكيد أسرع لكن ليس من قراءة واحدة. */
-                    var known = Array.isArray(DB.products) && DB.products.some(function(p){ return String(p.barcode||'')===code; });
-                    if (known) needed = retail ? 2 : 2;
-
-                    if (scannerCandidate.count >= needed && now - scannerCandidate.firstAt <= 1800) {
-                        acceptCameraBarcode(code);
-                    }
+                    var now=Date.now();
+                    if(scannerCandidate.code===code&&now-scannerCandidate.lastAt<=700){
+                        scannerCandidate.count++;scannerCandidate.lastAt=now;
+                    }else scannerCandidate={code:code,count:1,firstAt:now,lastAt:now};
+                    /* Two close frames = fast confirmation, rather than waiting 1.8 seconds. */
+                    if(scannerCandidate.count>=2&&now-scannerCandidate.firstAt<=900)acceptCameraBarcode(code);
                 };
-                try { Quagga.onDetected(scannerDetectedHandler); } catch (e) {
-                    toast('تعذر تشغيل حساس قراءة الباركود', 'error');
-                    stopScan();
-                }
+                try{Quagga.onDetected(scannerDetectedHandler);}catch(e){toast('تعذر تشغيل حساس قراءة الباركود','error');stopScan();}
             }
-
 
             // ==================== V26+ ADVANCED INVENTORY ====================
             function ensureWarehouses(){
