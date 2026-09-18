@@ -1588,6 +1588,28 @@ function ssUnitPrice(p,unit){
             width: 100%;
             height: 100%;
         }
+        /* Reusable single camera UI for Products + POS — one scanner, not duplicated. */
+        .barcode-camera-overlay{
+            position:fixed;inset:0;z-index:99990;display:flex;align-items:center;justify-content:center;
+            padding:1rem;background:rgba(0,0,0,.72);
+        }
+        .barcode-camera-panel{
+            width:min(94vw,470px);max-height:92vh;overflow:auto;background:var(--white);
+            border-radius:14px;padding:.75rem;box-shadow:0 18px 60px rgba(0,0,0,.35);text-align:center;
+        }
+        .barcode-camera-title{display:flex;align-items:center;justify-content:center;gap:.45rem;font-weight:900;font-size:.9rem;margin-bottom:.55rem;}
+        .barcode-camera-panel .camera-box{max-width:none;margin:0 0 .65rem;aspect-ratio:4/3;}
+        .barcode-camera-panel #btnStopCamera{width:100%;justify-content:center;}
+        #page-pos .pos-search-wrap{display:flex;align-items:center;gap:.35rem;}
+        #page-pos .pos-search-wrap .input-field{flex:1;min-width:0;}
+        #page-pos .pos-camera-btn{min-width:74px;min-height:44px;display:inline-flex;align-items:center;justify-content:center;gap:.3rem;white-space:nowrap;}
+        @media(max-width:480px){
+            #page-pos .pos-camera-btn{min-width:48px;padding:.45rem .55rem;}
+            #page-pos .pos-camera-btn span{display:none;}
+            .barcode-camera-overlay{padding:.5rem;}
+            .barcode-camera-panel{width:100%;padding:.6rem;border-radius:10px;}
+        }
+
 
         /* ==================== BARCODE SCANNER STATUS ==================== */
         .scanner-status {
@@ -4189,9 +4211,10 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
                     <div class="pos-layout">
                         <div class="card">
                 
-                            <div class="search-wrap" style="max-width:100%;">
+                            <div class="search-wrap pos-search-wrap" style="max-width:100%;">
                                 <i class="fas fa-barcode"></i>
-                                <input class="input-field" id="posSearch" placeholder="ابحث بالاسم أو امسح الباركود ثم Enter..." autocomplete="off">
+                                <input class="input-field" id="posSearch" placeholder="ابحث باسم المنتج أو امسح الباركود..." autocomplete="off">
+                                <button id="btnPosScanBarcode" class="btn btn-primary btn-sm pos-camera-btn" type="button" title="فتح كاميرا الباركود"><i class="fas fa-camera"></i><span>كاميرا</span></button>
                             </div>
                             <div class="chips-row" id="posCatChips"></div>
                             <div class="pos-grid" id="posGrid"></div>
@@ -4449,10 +4472,7 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
                             <button id="btnExportProducts" class="btn btn-outline"><i class="fas fa-file-csv"></i> تصدير CSV</button>
                             <input type="file" id="barcodeImgInput" accept="image/*" hidden>
                         </div>
-                        <div id="cameraSection" style="display:none;margin-top:0.75rem;">
-                            <div class="camera-box"><div id="scanner-viewport"></div></div>
-                            <button id="btnStopCamera" class="btn btn-danger btn-sm"><i class="fas fa-stop"></i> إغلاق الكاميرا</button>
-                        </div>
+                        
                     </div>
                     <div class="card">
                         <div class="card-head"><h2><i class="fas fa-boxes"></i> قائمة المنتجات</h2><span class="badge-pill" id="prodCount">0</span></div>
@@ -5376,6 +5396,14 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
                 </section>
 
             </main>
+        </div>
+    </div>
+
+    <div id="cameraSection" class="barcode-camera-overlay" style="display:none;">
+        <div class="barcode-camera-panel">
+            <div class="barcode-camera-title"><i class="fas fa-barcode"></i><span>ماسح الباركود</span></div>
+            <div class="camera-box"><div id="scanner-viewport"></div></div>
+            <button id="btnStopCamera" class="btn btn-danger btn-sm" type="button"><i class="fas fa-stop"></i> إغلاق الكاميرا</button>
         </div>
     </div>
 
@@ -7499,32 +7527,40 @@ function unitOptionsForProduct(p) {
                 renderPosGrid(val('posSearch')); };
 
             function renderPosGrid(filter) {
-                filter = filter || '';
+                filter = String(filter == null ? '' : filter).trim();
                 var grid = $('#posGrid');
                 if (!grid) return;
                 var items = DB.products;
-                var needle = String(filter).toLowerCase();
+                var needle = normalizeBarcodeDigits(filter).toLowerCase();
+                var isNumericBarcodeSearch = /^\d+$/.test(needle);
+
                 if (needle) items = items.filter(function(p) {
-                    return (p.name && p.name.toLowerCase().includes(needle)) ||
-                        (p.barcode && String(p.barcode) === String(filter)) ||
-                        (p.category && String(p.category).toLowerCase().includes(needle));
+                    var barcode = normalizeBarcodeDigits(String(p.barcode || '').trim()).toLowerCase();
+                    var name = String(p.name || '').toLowerCase();
+                    var category = String(p.category || '').toLowerCase();
+                    /* عند كتابة أرقام فقط: اعرض كل المنتجات التي يبدأ باركودها بما كُتب.
+                       مثال: 1 ثم 12 ثم 123... حتى يبقى المنتج المطابق ظاهرًا. */
+                    if (isNumericBarcodeSearch) return barcode.indexOf(needle) === 0;
+                    return name.includes(needle) || barcode.includes(needle) || category.includes(needle);
                 });
                 if (posCatSel) items = items.filter(function(p){ return (p.category || '') === posCatSel; });
 
                 grid.innerHTML = items.length === 0 ?
-                    '<div class="notif-empty" style="grid-column:1/-1;"><i class="fas fa-box-open" style="font-size:2rem;display:block;margin-bottom:.4rem;"></i>لا توجد منتجات</div>' :
+                    '<div class="notif-empty" style="grid-column:1/-1;"><i class="fas fa-box-open" style="font-size:2rem;display:block;margin-bottom:.4rem;"></i>لا توجد منتجات مطابقة</div>' :
                     items.map(function(p) {
                         normalizeProductUnits(p);
                         var q = num(p.quantity);
                         var inCart = posCart.find(function(c){ return c.productId === p.id; });
                         var reserved = inCart ? num(inCart.baseQty) : 0;
                         var avail = Math.max(0, q - reserved);
+                        var barcode = normalizeBarcodeDigits(String(p.barcode || ''));
                         return '<div class="pos-item ' + (avail <= 0 ? 'out' : '') + '" onclick="posAdd(\'' + p.id + '\')">' +
                             '<span class="p-qty badge ' + (avail <= 0 ? 'badge-red' : avail <= minStockOf(p) ? 'badge-amber' : 'badge-green') + '">' +
                             fmt(avail) + ' ' + baseUnitLabel(p.baseUnit) + '</span>' +
                             (p.image ? '<img src="' + p.image + '" class="p-img">' : '<div class="p-img"><i class="fas fa-box"></i></div>') +
                             '<div class="p-name">' + esc(p.name) + '</div>' +
                             '<div class="p-price">' + money(p.price) + ' / ' + esc(baseUnitLabel(p.baseUnit)) + '</div>' +
+                            (needle && barcode ? '<div style="font-size:.72rem;color:var(--gray-500);direction:ltr;margin-top:.12rem;">' + esc(barcode) + '</div>' : '') +
                             '</div>';
                     }).join('');
             }
@@ -9191,6 +9227,7 @@ function unitOptionsForProduct(p) {
             // ==================== BARCODE SCANNER (CAMERA) ====================
             // ماسح الكاميرا: لا نعتمد على قراءة واحدة حتى لا يتم التقاط نص/باركود مجاور بالخطأ.
             var scanning = false;
+            var scannerTarget = 'products';
             var scannerCandidate = { code: '', count: 0, firstAt: 0, lastAt: 0 };
             var scannerDetectedHandler = null;
             var scannerNativeRAF = 0;
@@ -9202,6 +9239,42 @@ function unitOptionsForProduct(p) {
                 return String(raw == null ? '' : raw)
                     .replace(/[\u0000-\u001F\u007F]/g, '')
                     .trim();
+            }
+
+            /* تحويل الأرقام العربية/الفارسية إلى أرقام ASCII حتى يعمل البحث والباركود
+               بنفس القيمة سواء كتبها المستخدم يدويًا أو أرسلها قارئ الباركود. */
+            function normalizeBarcodeDigits(raw) {
+                return String(raw == null ? '' : raw)
+                    .replace(/[٠-٩]/g, function(ch){ return String(ch.charCodeAt(0) - 0x0660); })
+                    .replace(/[۰-۹]/g, function(ch){ return String(ch.charCodeAt(0) - 0x06F0); });
+            }
+
+            function playBarcodeScanBeep() {
+                try {
+                    var Ctx = window.AudioContext || window.webkitAudioContext;
+                    if (!Ctx) return;
+                    if (!window.__barcodeAudioCtx) window.__barcodeAudioCtx = new Ctx();
+                    var ctx = window.__barcodeAudioCtx;
+                    var start = function(){
+                        try {
+                            var now = ctx.currentTime;
+                            var osc = ctx.createOscillator();
+                            var gain = ctx.createGain();
+                            osc.type = 'sine';
+                            osc.frequency.setValueAtTime(1550, now);
+                            osc.frequency.exponentialRampToValueAtTime(1050, now + 0.075);
+                            gain.gain.setValueAtTime(0.0001, now);
+                            gain.gain.exponentialRampToValueAtTime(0.16, now + 0.008);
+                            gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.105);
+                            osc.connect(gain);
+                            gain.connect(ctx.destination);
+                            osc.start(now);
+                            osc.stop(now + 0.11);
+                        } catch(e) {}
+                    };
+                    if (ctx.state === 'suspended') ctx.resume().then(start).catch(function(){});
+                    else start();
+                } catch(e) {}
             }
 
             function isValidBarcodeValue(code) {
@@ -9226,10 +9299,21 @@ function unitOptionsForProduct(p) {
             }
 
             function acceptCameraBarcode(code) {
-                code = normalizeScannedBarcode(code);
+                code = normalizeBarcodeDigits(normalizeScannedBarcode(code));
                 if (!isValidBarcodeValue(code)) return false;
-                setVal('prodBarcode', code);
-                handleBarcodeScan(code);
+                /* صوت قصير وواضح مثل أجهزة قراءة الباركود عند نجاح القراءة. */
+                playBarcodeScanBeep();
+                if (scannerTarget === 'pos') {
+                    var posInput = $('#posSearch');
+                    if (posInput) {
+                        posInput.value = code;
+                        posInput.dispatchEvent(new Event('input', {bubbles:true}));
+                    }
+                    handleBarcodeScan(code);
+                } else {
+                    setVal('prodBarcode', code);
+                    handleBarcodeScan(code);
+                }
                 toast('تم التقاط الباركود: ' + code, 'success');
                 stopScan();
                 return true;
@@ -9287,7 +9371,7 @@ function unitOptionsForProduct(p) {
             }
 
             function scannerNativeCandidate(raw, format, box) {
-                var code = normalizeScannedBarcode(raw);
+                var code = normalizeBarcodeDigits(normalizeScannedBarcode(raw));
                 if (!isValidBarcodeValue(code)) return false;
                 var f=String(format||'').toLowerCase();
                 var retail=/ean|upc/.test(f) || /^\d{8,14}$/.test(code);
@@ -9375,13 +9459,21 @@ function unitOptionsForProduct(p) {
                 }
             }
 
-            async function startScan() {
+            async function startScan(target) {
+                scannerTarget = target === 'pos' ? 'pos' : 'products';
+                /* تهيئة الصوت أثناء ضغطة زر الكاميرا حتى لا تمنع سياسات المتصفح صوت النجاح لاحقًا. */
+                try {
+                    var Ctx = window.AudioContext || window.webkitAudioContext;
+                    if (Ctx) {
+                        if (!window.__barcodeAudioCtx) window.__barcodeAudioCtx = new Ctx();
+                        if (window.__barcodeAudioCtx.state === 'suspended') window.__barcodeAudioCtx.resume().catch(function(){});
+                    }
+                } catch(e) {}
                 var section = $('#cameraSection');
                 var viewport = $('#scanner-viewport');
-                if (section) section.style.display = 'block';
                 resetScannerCandidate();
                 stopScan();
-                if (section) section.style.display = 'block';
+                if (section) section.style.display = 'flex';
                 if (!viewport) return;
 
                 /* First path: browser-native accelerated detection. On supported phones this
@@ -9434,7 +9526,7 @@ function unitOptionsForProduct(p) {
 
                 scannerDetectedHandler=function(r){
                     if(!scanning||!r||!r.codeResult||!r.codeResult.code)return;
-                    var code=normalizeScannedBarcode(r.codeResult.code);
+                    var code=normalizeBarcodeDigits(normalizeScannedBarcode(r.codeResult.code));
                     if(!isValidBarcodeValue(code))return;
                     var format=String(r.codeResult.format||'').toLowerCase();
                     var retail=/ean|upc/.test(format)||/^\d{8,14}$/.test(code);
@@ -10978,7 +11070,8 @@ function unitOptionsForProduct(p) {
                 });
             }
 
-            if ($('#btnScanBarcode')) $('#btnScanBarcode').addEventListener('click', startScan);
+            if ($('#btnScanBarcode')) $('#btnScanBarcode').addEventListener('click', function(){ startScan('products'); });
+            if ($('#btnPosScanBarcode')) $('#btnPosScanBarcode').addEventListener('click', function(){ startScan('pos'); });
             if ($('#btnStopCamera')) $('#btnStopCamera').addEventListener('click', stopScan);
             if ($('#btnScanImage')) {
                 $('#btnScanImage').addEventListener('click', function() {
@@ -11154,24 +11247,47 @@ function unitOptionsForProduct(p) {
             }
 
             if ($('#posSearch')) {
-                $('#posSearch').addEventListener('input', function() { renderPosGrid(this.value.trim()); });
+                function addExactPOSBarcode(inputEl) {
+                    if (!inputEl) return false;
+                    var q = normalizeBarcodeDigits(String(inputEl.value || '').trim());
+                    if (!q || q.length < 3 || q.length > 64) return false;
+                    var weighted = parseWeightedBarcode(q);
+                    if (weighted) {
+                        posAdd(weighted.product.id, weighted.weightKg);
+                        inputEl.value = '';
+                        renderPosGrid('');
+                        playBarcodeScanBeep();
+                        toast('تمت إضافة ' + weighted.product.name + ' بوزن ' + fmtWeight(weighted.weightKg) + ' كجم', 'success');
+                        return true;
+                    }
+                    var exact = DB.products.find(function(p) {
+                        return normalizeBarcodeDigits(String(p.barcode || '').trim()) === q;
+                    });
+                    if (exact) {
+                        posAdd(exact.id);
+                        inputEl.value = '';
+                        renderPosGrid('');
+                        playBarcodeScanBeep();
+                        toast('تم إضافة ' + exact.name + ' بواسطة الباركود', 'success');
+                        return true;
+                    }
+                    return false;
+                }
+
+                $('#posSearch').addEventListener('input', function() {
+                    /* البحث فوري مع كل حرف: 1 ← كل باركود يبدأ بـ1، ثم 12، ثم 123...
+                       ولا تتم إضافة أي منتج حتى الضغط على Enter. */
+                    renderPosGrid(this.value);
+                });
                 $('#posSearch').addEventListener('focus', function(){ this.select(); });
                 $('#posSearch').addEventListener('keydown', function(e) {
                     if (e.key === 'Enter') {
-                        var q = this.value.trim();
+                        e.preventDefault();
+                        var q = String(this.value || '').trim();
                         if (!q) return;
-                        var weighted = parseWeightedBarcode(q);
-                        if (weighted) {
-                            posAdd(weighted.product.id, weighted.weightKg);
-                            this.value = '';
-                            renderPosGrid('');
-                            toast('تمت إضافة ' + weighted.product.name + ' بوزن ' + fmtWeight(weighted.weightKg) + ' كجم', 'success');
-                            return;
+                        if (!addExactPOSBarcode(this)) {
+                            toast('لم يتم العثور على منتج بهذا الباركود', 'warn');
                         }
-                        var exact = DB.products.find(function(p) { return p.barcode === q; });
-                        if (exact) { posAdd(exact.id);
-                            this.value = '';
-                            renderPosGrid(''); }
                     }
                 });
             }
