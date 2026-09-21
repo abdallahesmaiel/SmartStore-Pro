@@ -1,0 +1,25 @@
+{
+  "name": "SmartStore PRO v41",
+  "short_name": "SmartStore PRO",
+  "description": "نظام إدارة المتاجر والمخازن والفواتير والسندات",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./دليل الحرفيين.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "./icon-192.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "./icon-512.svg",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
