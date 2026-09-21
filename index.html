@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.5, user-scalable=yes, viewport-fit=cover">
     <title>SmartStore PRO | نظام إدارة المتاجر والمخازن والفواتير والسندات</title>
-    <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.0/dist/quagga.min.js">
-    
+    <script src="https://cdn.jsdelivr.net/npm/@ericblade/quagga2@1.8.0/dist/quagga.min.js" defer></script>
+    <script>
 /* SMARTSTORE_V5_PACKAGING_HELPERS */
 function ssPackInfo(p){
     p=p||{};
@@ -232,8 +232,7 @@ function ssUnitPrice(p,unit){
 
 </script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js">
-    </script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
@@ -4025,6 +4024,13 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
 <style id="smartstore-v8-unit-stock-note">
 .pos-cart .unit-stock-note{font-size:.82rem;opacity:.8;margin-top:4px}
 </style>
+    <style id="smartstore-print-isolation">
+    @media print {
+        body.smartstore-printing > * { display:none !important; }
+        body.smartstore-printing #printArea { display:block !important; position:static !important; width:100% !important; height:auto !important; overflow:visible !important; }
+        body.smartstore-printing #printArea .receipt-doc { width:100% !important; max-width:190mm !important; margin:0 auto !important; }
+    }
+    </style>
 </head>
 <body class="auth-required">
     <div id="authScreen" role="dialog" aria-modal="true" aria-label="تسجيل الدخول">
@@ -5329,11 +5335,12 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
                         <div class="card-head"><h2><i class="fas fa-user-shield"></i> بيانات دخول النظام</h2><span class="badge-pill">يتم الحفظ عند الضغط على الزر</span></div>
                         <div class="alert-bar info show" style="display:flex"><i class="fas fa-circle-info"></i><span>هذه بيانات حسابك الحالي. المدير يستطيع إدارة حسابات الموظفين من صفحة الموظفين، والموظف يرى ويغيّر بيانات حسابه فقط.</span></div>
                         <div class="form-row settings-credentials-row">
+                            <div class="field-group"><label>الاسم الشخصي</label><input class="input-field" id="setAuthName" autocomplete="name" placeholder="الاسم الذي يظهر في الترحيب والواجهة"></div>
                             <div class="field-group"><label>اسم المستخدم الخاص بي</label><input class="input-field" id="setAuthUsername" autocomplete="username"></div>
                             <div class="field-group"><label>الرقم السري الخاص بي</label><div class="password-field-wrap"><input class="input-field" id="setAuthPassword" type="password" autocomplete="new-password"><button class="password-toggle" id="settingsPasswordToggle" type="button" aria-label="إظهار الرقم السري" title="إظهار الرقم السري"><i class="fas fa-eye"></i></button></div></div>
                         </div>
                         <div class="settings-save-row">
-                            <button id="btnSaveCredentials" type="button" class="btn btn-primary"><i class="fas fa-save"></i> حفظ تغييرات اسم المستخدم والرقم السري</button>
+                            <button id="btnSaveCredentials" type="button" class="btn btn-primary"><i class="fas fa-save"></i> حفظ الاسم واسم المستخدم والرقم السري</button>
                         </div>
                     </div>
                     <div class="card" id="securitySettingsCard">
@@ -5558,7 +5565,18 @@ html,body{width:100%;max-width:100%;overflow-x:hidden}
             }
 
             function save() {
-                try { if(typeof CREDIT_INDEX_CACHE!=='undefined') CREDIT_INDEX_CACHE=null; if(typeof ACCOUNTING_COST_CACHE!=='undefined') ACCOUNTING_COST_CACHE=null; localStorage.setItem(KEY, JSON.stringify(DB)); return true; } catch (e) { toast('تعذر حفظ البيانات: مساحة التخزين ممتلئة أو غير متاحة','error'); return false; }
+                try {
+                    if(typeof CREDIT_INDEX_CACHE!=='undefined') CREDIT_INDEX_CACHE=null;
+                    if(typeof ACCOUNTING_COST_CACHE!=='undefined') ACCOUNTING_COST_CACHE=null;
+                    var now=Date.now();
+                    localStorage.setItem(KEY, JSON.stringify(DB));
+                    try{localStorage.setItem('smartstore_pro_v40_persist_meta',JSON.stringify({savedAt:now,score:v40DataScore(DB),schema:'v40.2'}));}catch(_){ }
+                    return true;
+                } catch (e) {
+                    try{localStorage.setItem('smartstore_pro_v40_persist_meta',JSON.stringify({savedAt:Date.now(),score:v40DataScore(DB),schema:'v40.2',localStorageFailed:true}));}catch(_){ }
+                    toast('تعذر حفظ النسخة المحلية — تم الاحتفاظ بالبيانات في التخزين الدائم','warn');
+                    return false;
+                }
             }
             function makeBackup(){if(!requireAction('backup','ليس لديك صلاحية إنشاء نسخة احتياطية'))return;
                 try{ var payload={version:'v38.6-qr-preload-before-print-smart-search-box',createdAt:Date.now(),store:DB}; var blob=new Blob([JSON.stringify(payload)],{type:'application/json'}); var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='SmartStore_PRO_Backup_'+new Date().toISOString().slice(0,10)+'.json'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(function(){URL.revokeObjectURL(a.href);},500); logActivity('إنشاء نسخة احتياطية كاملة للبيانات','fa-database','blue'); save(); toast('تم إنشاء النسخة الاحتياطية بنجاح','success'); }catch(e){ toast('تعذر إنشاء النسخة الاحتياطية','error'); }
@@ -6282,6 +6300,7 @@ function unitOptionsForProduct(p) {
                     DB.users.unshift(admin);
                 }
                 admin.id=admin.id||'u-admin'; admin.role='admin'; admin.accessRole='admin'; admin.active=admin.active!==false;
+                if(!admin.name) admin.name=admin.username||DB.settings.authUsername||'admin';
                 if(!admin.passwordHash && !admin.password) admin.password=DB.settings.authPassword||'1234';
                 if(admin.passwordHash) DB.settings.authPasswordHash=admin.passwordHash;
                 DB.settings.authUsername=admin.username||DB.settings.authUsername||'admin';
@@ -6388,7 +6407,7 @@ function unitOptionsForProduct(p) {
                 window.scrollTo(0,0);
                 var main=$('#mainContent'); if(main)main.scrollTop=0;
                 if($('#menuToggle'))$('#menuToggle').blur();
-                toast('مرحباً '+(u.name||u.username),'success');
+                toast('مرحباً '+String((u.name||u.username||'').trim()),'success');
                 return true;
             }
             function setLoginLoading(loading){
@@ -6616,7 +6635,7 @@ function unitOptionsForProduct(p) {
                 txt('hdr-supp-debt', money(totalSuppDebit()));
                 txt('hdr-trx-count', DB.transactions.length + ' معاملة');
                 var hu=$('#hdrUser'), hs=$('#hdrShift'), u=getCurrentUser(), sh=currentShift();
-                if(hu) hu.innerHTML='<i class="fas fa-user"></i><span>'+esc(u.username||u.name||'—')+'</span>';
+                if(hu) hu.innerHTML='<i class="fas fa-user"></i><span>'+esc(u.name||u.username||'—')+(u.username&&u.name&&u.username!==u.name?' <small style="opacity:.65">('+esc(u.username)+')</small>':'')+'</span>';
                 if(hs){hs.classList.toggle('open',!!sh);hs.classList.toggle('closed',!sh);hs.innerHTML='<i class="fas fa-user-clock"></i><span>'+(sh?'مستلم: '+esc(sh.name||sh.username):'لا توجد وردية')+'</span>';}
                 var size = new Blob([JSON.stringify(DB)]).size / 1024;
                 txt('dataSize', size.toFixed(1));
@@ -7236,7 +7255,7 @@ function unitOptionsForProduct(p) {
 
             function updateDashboardWelcome(){
                 var u=getCurrentUser()||{};
-                txt('dashWelcome','مرحباً بك ' + (u.username||u.name||'') + ' في ' + (DB.settings.storeName || 'SmartStore PRO') + ' 👋');
+                txt('dashWelcome','مرحباً بك ' + (u.name||u.username||'') + (u.username&&u.name&&u.username!==u.name ? ' ('+u.username+')' : '') + ' في ' + (DB.settings.storeName || 'SmartStore PRO') + ' 👋');
             }
             function renderDashboard() {
                 var now = Date.now();
@@ -8269,6 +8288,7 @@ function unitOptionsForProduct(p) {
                 setVal('setStorePhone2', DB.settings.phone2 || '');
                 setVal('setStoreType', DB.settings.storeType || 'grocery');
                 var me=getCurrentUser();
+                setVal('setAuthName', me.name || me.username || DB.settings.authUsername || 'admin');
                 setVal('setAuthUsername', me.username || DB.settings.authUsername || 'admin');
                 setVal('setAuthPassword', me.password || (me.role==='admin'?DB.settings.authPassword:'') || '');
                 setVal('setSecurityTimeout', DB.settings.securityTimeout===undefined?15:DB.settings.securityTimeout); setVal('setSecurityMaxAttempts',DB.settings.securityMaxAttempts||5); setVal('setSecurityLockMinutes',DB.settings.securityLockMinutes||5);
@@ -10039,7 +10059,8 @@ function unitOptionsForProduct(p) {
             }
 
             // ==================== THERMAL PRINTER / PRINT AGENT ====================
-            var PRINT_AGENT_URL = (location.protocol === 'http:' || location.protocol === 'https:') ? (location.origin + '/api/print-agent') : 'http://127.0.0.1:17891';
+            var PRINT_AGENT_URL = '';
+            try { if (window.SMARTSTORE_ENABLE_PRINT_AGENT === true) PRINT_AGENT_URL = String(window.SMARTSTORE_PRINT_AGENT_URL || ''); } catch(e) {}
             var PRINT_AGENT_TIMEOUT = 5000;
             var thermalAgentConnected = false;
             var thermalPrinterName = '';
@@ -10470,8 +10491,10 @@ function unitOptionsForProduct(p) {
                 printHtml += '<meta charset="UTF-8">\n';
                 printHtml += '<title>مستند مالي</title>\n';
                 printHtml += '<style>\n';
-                printHtml += 'body{font-family:"Cairo","Segoe UI",sans-serif;padding:20px;color:#334155;font-size:14px;direction:rtl;background:#fff;}\n';
-                printHtml += '.receipt-doc{max-width:400px;margin:0 auto;}\n';
+                printHtml += '@page{size:auto;margin:8mm;}\n';
+                printHtml += 'html,body{margin:0!important;padding:0!important;background:#fff!important;width:100%;}\n';
+                printHtml += 'body{font-family:"Cairo","Segoe UI",Arial,sans-serif;color:#334155;font-size:14px;direction:rtl;-webkit-print-color-adjust:exact;print-color-adjust:exact;}\n';
+                printHtml += '.receipt-doc{width:100%;max-width:190mm;margin:0 auto;padding:0;box-sizing:border-box;}\n';
                 printHtml += '.invoice-barcode-box{display:flex;flex-direction:column;align-items:center;gap:3px;margin:14px auto 4px;padding:8px 4px 4px;border:0;border-top:1px dashed #cbd5e1;background:#fff;max-width:270px;width:100%;text-align:center;break-inside:avoid;page-break-inside:avoid;}\n';
                 printHtml += '.invoice-barcode-box svg{width:250px;height:72px;max-width:100%;display:block;shape-rendering:crispEdges;}\n';
                 printHtml += '.invoice-barcode-box small{font-size:11px;color:#111827;line-height:1.2;font-family:monospace;font-weight:800;letter-spacing:.5px;}\n';
@@ -10498,7 +10521,7 @@ function unitOptionsForProduct(p) {
                 printHtml += '.r-foot{text-align:center;font-size:0.7rem;color:#94a3b8;margin-top:12px;border-top:1px solid #e2e8f0;padding-top:10px;}\n';
                 printHtml += '.r-stamp{text-align:center;margin-top:10px;}\n';
                 printHtml += '.r-stamp span{border:2px solid #94a3b8;border-radius:6px;padding:5px 12px;font-size:0.7rem;color:#94a3b8;}\n';
-                printHtml += '@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact;}}\n';
+                printHtml += '@media print{html,body{width:100%;margin:0!important;padding:0!important;} .receipt-doc{width:100%;max-width:190mm;margin:0 auto;} *{box-sizing:border-box;}}\n';
                 printHtml += '</style>\n';
                 printHtml += '</head>\n';
                 printHtml += '<body>\n';
@@ -10511,46 +10534,32 @@ function unitOptionsForProduct(p) {
                 printArea.innerHTML = printHtml;
                 printArea.style.display = 'block';
 
-                // طباعة باستخدام iframe لضمان العمل على جميع المتصفحات
-                try {
-                    var iframe = document.createElement('iframe');
-                    iframe.style.position = 'fixed';
-                    iframe.style.left = '-9999px';
-                    iframe.style.top = '-9999px';
-                    iframe.style.width = '0';
-                    iframe.style.height = '0';
-                    iframe.style.border = 'none';
-                    document.body.appendChild(iframe);
-
-                    var doc = iframe.contentWindow.document;
-                    doc.open();
-                    doc.write(printHtml);
-                    doc.close();
-
-                    setTimeout(function() {
-                        try {
-                            iframe.contentWindow.focus();
-                            iframe.contentWindow.print();
-                        } catch (e) {
-                            // في حال فشل iframe، نستخدم الطباعة المباشرة
-                            window.print();
+                // طباعة مستقلة عن تخطيط الموقع: نافذة طباعة كاملة + fallback للطباعة الحالية.
+                var printWindow = null;
+                try { printWindow = window.open('', '_blank', 'width=900,height=700'); } catch (e) {}
+                if (printWindow) {
+                    try {
+                        printWindow.document.open();
+                        printWindow.document.write(printHtml);
+                        printWindow.document.close();
+                        setTimeout(function(){
+                            try { printWindow.focus(); printWindow.print(); } catch(e) { window.print(); }
+                            setTimeout(function(){ try { printWindow.close(); } catch(_) {} }, 900);
+                        }, 350);
+                    } catch (e) {
+                        try { printWindow.close(); } catch(_) {}
+                        window.print();
+                    }
+                } else {
+                    document.body.classList.add('smartstore-printing');
+                    setTimeout(function(){
+                        try { window.print(); } finally {
+                            setTimeout(function(){ document.body.classList.remove('smartstore-printing'); printArea.style.display='none'; printArea.innerHTML=''; }, 800);
                         }
-                        setTimeout(function() {
-                            iframe.remove();
-                            printArea.style.display = 'none';
-                            printArea.innerHTML = '';
-                        }, 1000);
-                    }, 500);
-                } catch (e) {
-                    // بديل: طباعة مباشرة
-                    window.print();
-                    setTimeout(function() {
-                        printArea.style.display = 'none';
-                        printArea.innerHTML = '';
-                    }, 1000);
+                    }, 80);
                 }
 
-                toast('جاري طباعة المستند...', 'info');
+                toast('جاري تجهيز المستند للطباعة...', 'info');
             }
 
             // ==================== EVENT BINDINGS ====================
@@ -11537,17 +11546,19 @@ function unitOptionsForProduct(p) {
                 });
             }
             if ($('#btnSaveCredentials')) $('#btnSaveCredentials').addEventListener('click', async function(){
+                var newName=String(val('setAuthName')||'').trim();
                 var newUsername=String(val('setAuthUsername')||'').trim();
                 var newPassword=String(val('setAuthPassword')||'');
                 var me=getCurrentUser();
                 if(!me){toast('يجب تسجيل الدخول أولًا','error');return;}
                 var conflict=(DB.users||[]).find(function(u){return String(u.username||'').trim()===newUsername && u.id!==me.id;});
-                if(!newUsername || !newPassword){toast('اسم المستخدم والرقم السري مطلوبان','error');return;}
+                if(!newName || !newUsername || !newPassword){toast('الاسم الشخصي واسم المستخدم والرقم السري مطلوبون','error');return;}
                 if(newUsername.length<3){toast('اسم المستخدم يجب أن يكون 3 أحرف على الأقل','error');return;}
                 if(newPassword.length<4){toast('الرقم السري يجب أن يكون 4 أحرف/أرقام على الأقل','error');return;}
                 if(conflict){toast('اسم المستخدم مستخدم بالفعل','error');return;}
 
-                /* Change credentials in-place: preserve the same user ID and all history. */
+                /* Change profile/login data in-place: preserve the same user ID and all history. */
+                me.name=newName;
                 me.username=newUsername;
                 me.password=newPassword;
                 delete me.passwordHash;
@@ -11557,7 +11568,7 @@ function unitOptionsForProduct(p) {
                     delete DB.settings.authPasswordHash;
                 }
                 var linkedEmp=(DB.employees||[]).find(function(e){return e.userId===me.id;});
-                if(linkedEmp){linkedEmp.username=newUsername;linkedEmp.password=newPassword;}
+                if(linkedEmp){linkedEmp.name=newName;linkedEmp.username=newUsername;linkedEmp.password=newPassword;}
                 CURRENT_USER=me;
                 sessionStorage.setItem('smartstore_logged_user',newUsername);
                 localStorage.setItem('smartstore_logged_user',newUsername);
@@ -12284,8 +12295,14 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
             // Offline-first: local state is always saved first. If the connection drops,
             // the latest local state becomes pending and is pushed to the server when the
             // connection returns. Server data is not allowed to overwrite unsynced local edits.
-            var LAN_ENABLED = location.protocol === 'http:' || location.protocol === 'https:';
-            var LAN_STATE_URL = '/api/state';
+            var LAN_ENABLED = false;
+            var LAN_STATE_URL = '';
+            // Static-host safe mode: no /api/state or WebSocket backend is assumed.
+            // LocalStorage remains the primary store; a server build can opt in explicitly.
+            try {
+                LAN_ENABLED = window.SMARTSTORE_ENABLE_SERVER_SYNC === true && (location.protocol === 'http:' || location.protocol === 'https:');
+                LAN_STATE_URL = String(window.SMARTSTORE_STATE_URL || '/api/state');
+            } catch(e) { LAN_ENABLED = false; }
             var LAN_WS = null;
             var LAN_READY = false;
             var LAN_PENDING = false;
@@ -12398,7 +12415,11 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
             }
 
             function lanSaveLocalOnly() {
-                try { localStorage.setItem(KEY, JSON.stringify(DB)); } catch(e) {}
+                try {
+                    var now=Date.now();
+                    localStorage.setItem(KEY, JSON.stringify(DB));
+                    try{localStorage.setItem(V40_PERSIST_META_KEY,JSON.stringify({savedAt:now,score:v40DataScore(DB),schema:'v40.2'}));}catch(_){ }
+                } catch(e) {}
             }
 
             function lanMarkLocalDirty() {
@@ -12511,7 +12532,7 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
             }
 
             function lanConnectWS() {
-                if (!LAN_ENABLED || !window.WebSocket) return;
+                if (!LAN_ENABLED || !window.WebSocket) { LAN_READY=false; return; }
                 try {
                     var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
                     LAN_WS = new WebSocket(proto + '//' + location.host);
@@ -12640,7 +12661,86 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
 
             var V40_IDB_NAME='SmartStorePRO_v40', V40_IDB_STORE='state', V40_IDB_KEY='db';
             var V40_IDB=null, V40_IDB_READY=false, V40_IDB_WRITE_TIMER=null, V40_LAST_DB_JSON='';
+            var V40_PERSIST_META_KEY='smartstore_pro_v40_persist_meta';
             var V40_HASH_ALGO='SHA-256';
+
+            /*
+             * v40.2 PERSISTENCE RECOVERY
+             * localStorage is kept for compatibility, while IndexedDB is the durable
+             * mirror. On hosted builds localStorage can be cleared/limited (especially
+             * when product images make the payload large). The previous build wrote the
+             * IndexedDB mirror but never read it back, so a fresh page could appear empty.
+             */
+            function v40DataScore(data){
+                try{
+                    data=data||{};
+                    var keys=['products','customers','suppliers','employees','transactions','payments','movements','categories','notifications','heldCarts','expenses','installments'];
+                    return keys.reduce(function(n,k){return n+(Array.isArray(data[k])?data[k].length:0);},0);
+                }catch(e){return 0;}
+            }
+            function v40ReadPersistMeta(){
+                try{return JSON.parse(localStorage.getItem(V40_PERSIST_META_KEY)||'{}')||{};}catch(e){return {};}
+            }
+            function v40WritePersistMeta(ts,score){
+                try{localStorage.setItem(V40_PERSIST_META_KEY,JSON.stringify({savedAt:Number(ts)||Date.now(),score:Number(score)||0,schema:'v40.2'}));}catch(e){}
+            }
+            function v40ApplyLoadedDB(data){
+                if(!data || typeof data!=='object') return false;
+                DB=Object.assign({},DB,data);
+                DB.products=Array.isArray(data.products)?data.products:[];
+                DB.customers=Array.isArray(data.customers)?data.customers:[];
+                DB.suppliers=Array.isArray(data.suppliers)?data.suppliers:[];
+                DB.employees=Array.isArray(data.employees)?data.employees:[];
+                DB.auditLog=Array.isArray(data.auditLog)?data.auditLog:[];
+                DB.transactions=Array.isArray(data.transactions)?data.transactions:[];
+                DB.heldCarts=Array.isArray(data.heldCarts)?data.heldCarts:[];
+                DB.payments=Array.isArray(data.payments)?data.payments:[];
+                DB.movements=Array.isArray(data.movements)?data.movements:[];
+                DB.activity=Array.isArray(data.activity)?data.activity:[];
+                DB.notifications=Array.isArray(data.notifications)?data.notifications:[];
+                DB.permissions=data.permissions&&typeof data.permissions==='object'?data.permissions:{};
+                DB.categories=Array.isArray(data.categories)?data.categories:[];
+                DB.users=Array.isArray(data.users)?data.users:[];
+                DB.shifts=Array.isArray(data.shifts)?data.shifts:[];
+                DB.warehouses=Array.isArray(data.warehouses)?data.warehouses:[];
+                DB.stockByWarehouse=data.stockByWarehouse&&typeof data.stockByWarehouse==='object'?data.stockByWarehouse:{};
+                DB.purchaseDrafts=Array.isArray(data.purchaseDrafts)?data.purchaseDrafts:[];
+                DB.poNext=Math.max(1,int(data.poNext)||1);
+                DB.expenses=Array.isArray(data.expenses)?data.expenses:[];
+                DB.accountingMeta=Object.assign({lastCostRecalc:0},data.accountingMeta||{});
+                DB.trackingEvents=Array.isArray(data.trackingEvents)?data.trackingEvents:[];
+                DB.installments=Array.isArray(data.installments)?data.installments:[];
+                DB.creditMeta=Object.assign({version:1},data.creditMeta||{});
+                DB.currentWarehouseId=data.currentWarehouseId||'';
+                DB.currentShiftId=data.currentShiftId||'';
+                DB.treasuryReconciliations=Array.isArray(data.treasuryReconciliations)?data.treasuryReconciliations:[];
+                DB.dailyClosings=Array.isArray(data.dailyClosings)?data.dailyClosings:[];
+                DB.security=data.security&&typeof data.security==='object'?data.security:{failed:{},lockedUntil:{},lastActivity:Date.now()};
+                DB.cashbox=normalizeCashbox(data.cashbox);
+                DB.settings=Object.assign(defaultSettings(),data.settings||{});
+                try{normalizeNotifications();DB.transactions.forEach(normalizeTrx);DB.products.forEach(function(pr){normalizeProductUnits(pr);if(pr.category&&!DB.categories.includes(pr.category))DB.categories.push(pr.category);if(pr.minStock===undefined)pr.minStock=DB.settings.lowStock;if(!pr.productType)pr.productType='general';});}catch(e){}
+                return true;
+            }
+            function v40RestorePersistentState(){
+                return v40ReadIDB().then(function(rec){
+                    if(!rec || !rec.data) return false;
+                    var localData=null;
+                    try{var raw=localStorage.getItem(KEY);if(raw)localData=JSON.parse(raw);}catch(e){}
+                    var localScore=v40DataScore(localData), idbScore=v40DataScore(rec.data);
+                    var meta=v40ReadPersistMeta();
+                    var localSaved=Number(meta.savedAt)||0, idbSaved=Number(rec.savedAt)||0;
+                    var useIDB=false;
+                    if(!localData) useIDB=true;
+                    else if(localScore===0 && idbScore>0) useIDB=true;
+                    else if(idbSaved>localSaved && idbScore>=localScore) useIDB=true;
+                    else if(idbScore>localScore+2 && !localSaved) useIDB=true;
+                    if(!useIDB) return false;
+                    if(!v40ApplyLoadedDB(rec.data)) return false;
+                    try{localStorage.setItem(KEY,JSON.stringify(DB));v40WritePersistMeta(idbSaved||Date.now(),v40DataScore(DB));}catch(e){}
+                    try{refreshAll();fillSettings();renderNotifs();updateAccessUI();}catch(e){}
+                    return true;
+                }).catch(function(){return false;});
+            }
 
             function v40OpenIDB(){
                 if(!window.indexedDB || V40_IDB_READY || V40_IDB) return Promise.resolve(V40_IDB);
@@ -12659,7 +12759,7 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
                 V40_IDB_WRITE_TIMER=setTimeout(function(){
                     v40OpenIDB().then(function(db){
                         if(!db) return;
-                        try{var tx=db.transaction(V40_IDB_STORE,'readwrite');tx.objectStore(V40_IDB_STORE).put({savedAt:Date.now(),data:DB},V40_IDB_KEY);}catch(_){}
+                        try{var savedAt=Date.now();var tx=db.transaction(V40_IDB_STORE,'readwrite');tx.objectStore(V40_IDB_STORE).put({savedAt:savedAt,data:DB,schema:'v40.2'},V40_IDB_KEY);}catch(_){}
                     });
                 },300);
             }
@@ -12878,9 +12978,10 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
                 v40Obs.observe(document.body,{childList:true,subtree:true});
             }
 
-            /* Start the IndexedDB mirror early; never block app startup. */
+            /* Open IndexedDB early, but DO NOT mirror the in-memory defaults here.
+             * Recovery must read the previous durable copy first; writing defaults at
+             * startup could otherwise overwrite the very data we are trying to restore. */
             v40OpenIDB();
-            v40MirrorDB();
 
             // ==================== PASSWORD VISIBILITY ====================
             function setPasswordVisibility(toggleId,inputId,show){
@@ -12907,6 +13008,14 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
             if($('#authUsername')) $('#authUsername').addEventListener('keydown', function(e){if(e.key==='Enter'){e.preventDefault();if($('#authPassword')) $('#authPassword').focus();}});
             if($('#btnLogout')) $('#btnLogout').addEventListener('click', function(){ if(confirm('تسجيل الخروج؟ إذا كانت لديك وردية مفتوحة سيتم إنهاؤها تلقائيًا عند تسجيل الخروج.')) doLogout(true); });
             load();
+            /* Restore the durable IndexedDB copy when localStorage is empty/stale. */
+            v40RestorePersistentState().then(function(restored){
+                if(restored){
+                    try{ensureAuthMigration();ensurePermissionData();smartNotificationSweep();updateAccessUI();refreshAll();fillSettings();renderNotifs();}catch(e){}
+                }
+                /* Mirror only after recovery has had the chance to read the old copy. */
+                try{v40MirrorDB();}catch(e){}
+            });
             ensureAuthMigration();
             v40SecureMigrateAll();
             ensurePermissionData();
@@ -12925,7 +13034,14 @@ function initCreditControl(){if(!$('#page-credit-control'))return;ensureCreditDa
             renderNotifs();
             syncMobileNav(currentPage);
             setTimeout(function(){ enhanceResponsiveTables(); startResponsiveTableObservers(); }, 0);
-            console.log('🚀 SmartStore PRO v40.1.1 Ultimate Fixed Enterprise Responsive — نظام إدارة المتاجر والمخازن الاحترافي');
+            console.log('🚀 SmartStore PRO v40.2 Persistent Storage + Ultimate Responsive — نظام إدارة المتاجر والمخازن الاحترافي');
+            // Optional CDN libraries are deferred so hosting never blocks the app.
+            // Once loaded, refresh visual components that depend on them.
+            window.addEventListener('load', function(){
+                try { if (typeof Chart !== 'undefined' && currentPage === 'dashboard') renderDashboard(); } catch(e) { console.warn('Chart refresh:', e); }
+                try { if (typeof updateScannerStatus === 'function') updateScannerStatus(false); } catch(e) {}
+            }, {once:true});
+
             console.log('📊 ' + DB.products.length + ' منتج · ' + DB.customers.length + ' عميل · ' + DB.suppliers
                 .length + ' مورد · ' + DB.transactions.length + ' فاتورة · ' + DB.movements.length +
                 ' حركة مخزون');
